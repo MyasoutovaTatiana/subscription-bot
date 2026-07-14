@@ -1,0 +1,11 @@
+services:
+  bot:
+    build: .
+    container_name: subscription-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    environment:
+      DATABASE_URL: sqlite+aiosqlite:///./data/subscription_bot.db
