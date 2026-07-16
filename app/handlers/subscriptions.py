@@ -36,7 +36,11 @@ from app.models.enums import (
     SubscriptionCategory,
 )
 from app.models.user import User
-from app.repositories.payment_methods import PaymentMethodRepository
+from app.repositories.payment_methods import (
+    PAYMENT_METHOD_UNAVAILABLE_MESSAGE,
+    PaymentMethodRepository,
+    PaymentMethodUnavailableError,
+)
 from app.services.billing_dates import billing_label_short
 from app.services.charge_cards import format_charge_confirmed
 from app.services.subscription_cards import (
@@ -393,7 +397,18 @@ async def confirm_create(
         friend_ids=list(data.get("friend_ids") or []),
     )
     service = SubscriptionService(session)
-    sub = await service.create(dto)
+    try:
+        sub = await service.create(dto)
+    except PaymentMethodUnavailableError:
+        await state.update_data(payment_method_id=None)
+        await state.set_state(AddSubscriptionSG.payment_method)
+        methods = await PaymentMethodRepository(session).list_active(db_user.id)
+        await callback.message.edit_text(
+            PAYMENT_METHOD_UNAVAILABLE_MESSAGE,
+            reply_markup=payment_methods_keyboard(methods),
+        )
+        await callback.answer()
+        return
     await state.clear()
 
     estimated = None

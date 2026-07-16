@@ -11,6 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.enums import ConversionMode, DebtStatus, SplitMode, TransactionType
 from app.models.transaction import Transaction
 from app.repositories.debts import DebtRepository
+from app.repositories.payment_methods import (
+    PaymentMethodRepository,
+    PaymentMethodUnavailableError,
+)
 from app.repositories.transactions import TransactionRepository
 from app.services.currency import CurrencyConverter
 from app.services.debt_calculator import ParticipantShare, calculate_split
@@ -47,6 +51,14 @@ class TransactionService:
     async def create_one_time(self, dto: CreateOneTimePaymentDTO) -> Transaction:
         if dto.original_amount <= 0:
             raise MoneyError("Нельзя создать платёж с нулевой или отрицательной суммой")
+
+        if dto.payment_method_id is not None:
+            method = await PaymentMethodRepository(self._session).get_active_for_user(
+                dto.payment_method_id,
+                dto.user_id,
+            )
+            if method is None:
+                raise PaymentMethodUnavailableError()
 
         exchange_rate: Decimal | None
         exchange_rate_date: date | None

@@ -7,6 +7,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.payment_method import PaymentMethod
 
+PAYMENT_METHOD_UNAVAILABLE_MESSAGE = (
+    "Способ оплаты недоступен. Выберите способ оплаты ещё раз."
+)
+
+
+class PaymentMethodUnavailableError(ValueError):
+    """Payment method missing, inactive, or not owned by the user."""
+
+    def __init__(self) -> None:
+        super().__init__(PAYMENT_METHOD_UNAVAILABLE_MESSAGE)
+
 
 class PaymentMethodRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -25,6 +36,18 @@ class PaymentMethodRepository:
             select(PaymentMethod).where(
                 PaymentMethod.id == payment_method_id,
                 PaymentMethod.user_id == user_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_active_for_user(
+        self, payment_method_id: int, user_id: int
+    ) -> PaymentMethod | None:
+        result = await self._session.execute(
+            select(PaymentMethod).where(
+                PaymentMethod.id == payment_method_id,
+                PaymentMethod.user_id == user_id,
+                PaymentMethod.is_active.is_(True),
             )
         )
         return result.scalar_one_or_none()
