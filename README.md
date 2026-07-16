@@ -8,6 +8,7 @@ Telegram-бот для личного учёта регулярных подпи
 - [docs/PRODUCT_RULES.md](docs/PRODUCT_RULES.md) — бизнес-правила
 - [docs/STATUS.md](docs/STATUS.md) — что готово / риски
 - [docs/TASKS.md](docs/TASKS.md) — бэклог
+- [docs/ROADMAP.md](docs/ROADMAP.md) — согласованный порядок релизов
 - [docs/DECISIONS.md](docs/DECISIONS.md) — принятые решения
 
 ## Возможности
@@ -147,14 +148,12 @@ DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/subscription_bot
 
 ## Типовые ошибки
 
-
 | Проблема                     | Что проверить                                                                |
 | ---------------------------- | ---------------------------------------------------------------------------- |
 | `ValidationError` при старте | Заполнен ли `BOT_TOKEN` в `.env`                                             |
 | Бот не отвечает              | Токен, интернет, не запущен ли второй инстанс с тем же токеном               |
 | Нет курса валюты             | Сеть до `cbr.ru`, позже — кэш в таблице `exchange_rates`                     |
 | Напоминания не приходят      | Часовой пояс пользователя, `reminder_time`, offsets подписки, логи scheduler |
-
 
 ## Безопасность
 
