@@ -44,6 +44,11 @@ from app.repositories.payment_methods import (
 )
 from app.services.billing_dates import billing_label_short
 from app.services.charge_cards import format_charge_confirmed
+from app.services.charges import (
+    CHARGE_DATA_UNAVAILABLE_MESSAGE,
+    ChargeDataUnavailableError,
+    ChargeService,
+)
 from app.services.subscription_cards import (
     format_reminder_offsets,
     format_subscription_card,
@@ -595,9 +600,13 @@ async def cb_charged(
             session,
             state,
             sub,
+            user_id=db_user.id,
             actual_rub=None,
             edit=True,
         )
+    except ChargeDataUnavailableError:
+        await callback.answer(CHARGE_DATA_UNAVAILABLE_MESSAGE, show_alert=True)
+        return
     except Exception as exc:  # noqa: BLE001
         await callback.answer(human_error(str(exc)), show_alert=True)
         return
@@ -625,9 +634,13 @@ async def cb_charge_skip(
             session,
             state,
             sub,
+            user_id=db_user.id,
             actual_rub=None,
             edit=True,
         )
+    except ChargeDataUnavailableError:
+        await callback.answer(CHARGE_DATA_UNAVAILABLE_MESSAGE, show_alert=True)
+        return
     except Exception as exc:  # noqa: BLE001
         await callback.answer(human_error(str(exc)), show_alert=True)
         return
@@ -700,8 +713,14 @@ async def charge_actual_rub_entered(
             session,
             state,
             sub,
+            user_id=db_user.id,
             actual_rub=amount,
             edit=False,
+        )
+    except ChargeDataUnavailableError:
+        await message.answer(
+            CHARGE_DATA_UNAVAILABLE_MESSAGE,
+            reply_markup=main_menu_keyboard(),
         )
     except Exception as exc:  # noqa: BLE001
         await message.answer(human_error(str(exc)), reply_markup=main_menu_keyboard())
@@ -713,13 +732,13 @@ async def _complete_charge(
     state: FSMContext,
     sub,
     *,
+    user_id: int,
     actual_rub: Decimal | None,
     edit: bool,
 ) -> None:
-    from app.services.charges import ChargeService
-
     _tx, next_date, _estimated, _actual = await ChargeService(session).confirm_charged(
         sub,
+        user_id=user_id,
         actual_rub_amount=actual_rub,
     )
     await state.clear()

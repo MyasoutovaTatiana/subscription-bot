@@ -11,12 +11,26 @@ from app.models.enums import BillingType, ConversionMode, DebtStatus, SplitMode,
 from app.models.subscription import Subscription
 from app.models.transaction import Transaction
 from app.repositories.debts import DebtRepository
+from app.repositories.friends import FriendRepository
+from app.repositories.payment_methods import PaymentMethodRepository
 from app.repositories.subscriptions import SubscriptionRepository
 from app.repositories.transactions import TransactionRepository
 from app.services.billing_dates import calculate_next_charge_date
 from app.services.currency import CurrencyConverter
 from app.services.debt_calculator import calculate_split
 from app.utils.money import MoneyError, ZERO, quantize_money
+
+
+CHARGE_DATA_UNAVAILABLE_MESSAGE = (
+    "Данные подписки изменились или недоступны. Проверьте способ оплаты и участников."
+)
+
+
+class ChargeDataUnavailableError(LookupError):
+    """A subscription or one of its owner-scoped relations is unavailable."""
+
+    def __init__(self) -> None:
+        super().__init__(CHARGE_DATA_UNAVAILABLE_MESSAGE)
 
 
 class ChargeService:
@@ -27,15 +41,20 @@ class ChargeService:
         self._tx = TransactionRepository(session)
         self._debts = DebtRepository(session)
         self._subs = SubscriptionRepository(session)
+        self._friends = FriendRepository(session)
+        self._payment_methods = PaymentMethodRepository(session)
         self._fx = CurrencyConverter(session)
 
     async def confirm_charged(
         self,
         subscription: Subscription,
         *,
+        user_id: int,
         charge_date: date | None = None,
         actual_rub_amount: Decimal | None = None,
     ):
+        subscription = await self._validated_owned_subscription(subscription, user_id)
+
         if subscription.amount <= 0:
             raise MoneyError("Сумма подписки должна быть больше нуля")
 
@@ -96,6 +115,9 @@ class ChargeService:
         amount: Decimal,
     ) -> tuple[Decimal, Decimal]:
         """Set fact ₽ amount; recalculate friend debts. Returns (was, now)."""
+        subscription = await self._subscription_for(tx)
+        await self._validate_rebuild_links(tx, subscription)
+
         was = self.effective_rub(tx)
         now = quantize_money(amount)
         if now <= ZERO:
@@ -104,7 +126,7 @@ class ChargeService:
         tx.is_rate_estimated = False
         tx.conversion_mode = ConversionMode.ACTUAL_RUB.value
         await self._tx.save(tx)
-        await self._rebuild_splits_and_debts(tx, await self._subscription_for(tx))
+        await self._rebuild_splits_and_debts(tx, subscription)
         return was, now
 
     async def update_charge_date(
@@ -116,8 +138,11 @@ class ChargeService:
         Change charge date and recompute subscription.next_charge_date from it.
         Also refresh CBR estimate for the new date when fact is not set.
         """
-        tx.transaction_date = new_date
         sub = await self._subscription_for(tx)
+        if tx.actual_rub_amount is None:
+            await self._validate_rebuild_links(tx, sub)
+
+        tx.transaction_date = new_date
         if sub is None:
             await self._tx.save(tx)
             return None
@@ -160,6 +185,11 @@ class ChargeService:
         """Set manual unit rate (₽ for 1 unit of original currency); update estimate."""
         if unit_rate_rub <= ZERO:
             raise MoneyError("Курс должен быть больше нуля")
+        subscription = None
+        if tx.actual_rub_amount is None:
+            subscription = await self._subscription_for(tx)
+            await self._validate_rebuild_links(tx, subscription)
+
         tx.exchange_rate = unit_rate_rub
         tx.exchange_rate_date = tx.transaction_date
         estimated = quantize_money(Decimal(tx.original_amount) * unit_rate_rub)
@@ -169,7 +199,7 @@ class ChargeService:
             tx.is_rate_estimated = True
         await self._tx.save(tx)
         if tx.actual_rub_amount is None:
-            await self._rebuild_splits_and_debts(tx, await self._subscription_for(tx))
+            await self._rebuild_splits_and_debts(tx, subscription)
         return estimated
 
     async def recalculate_debts(self, tx: Transaction) -> None:
@@ -211,6 +241,8 @@ class ChargeService:
         subscription: Subscription | None,
     ) -> None:
         friend_ids = self._friend_ids(tx, subscription)
+        await self._validate_friend_ids(friend_ids, tx.user_id)
+
         await self._tx.clear_splits(tx)
         await self._debts.delete_active_for_transaction(tx.id)
 
@@ -255,6 +287,48 @@ class ChargeService:
                 status=DebtStatus.ACTIVE.value,
             )
         self._session.expire(tx, ["debts", "splits"])
+
+    async def _validated_owned_subscription(
+        self,
+        subscription: Subscription,
+        user_id: int,
+    ) -> Subscription:
+        if subscription.user_id != user_id:
+            raise ChargeDataUnavailableError()
+        owned = await self._subs.get_for_user(subscription.id, user_id)
+        if owned is None:
+            raise ChargeDataUnavailableError()
+        await self._validate_subscription_links(owned)
+        return owned
+
+    async def _validate_subscription_links(self, subscription: Subscription) -> None:
+        if subscription.payment_method_id is not None:
+            method = await self._payment_methods.get_for_user(
+                subscription.payment_method_id,
+                subscription.user_id,
+            )
+            if method is None:
+                raise ChargeDataUnavailableError()
+        await self._validate_friend_ids(
+            [participant.friend_id for participant in subscription.participants],
+            subscription.user_id,
+        )
+
+    async def _validate_rebuild_links(
+        self,
+        tx: Transaction,
+        subscription: Subscription | None,
+    ) -> None:
+        friend_ids = self._friend_ids(tx, subscription)
+        await self._validate_friend_ids(friend_ids, tx.user_id)
+
+    async def _validate_friend_ids(self, friend_ids: list[int], user_id: int) -> None:
+        requested_ids = set(friend_ids)
+        if len(requested_ids) != len(friend_ids):
+            raise ChargeDataUnavailableError()
+        friends = await self._friends.list_by_ids_for_user(requested_ids, user_id)
+        if {friend.id for friend in friends} != requested_ids:
+            raise ChargeDataUnavailableError()
 
     @staticmethod
     def _friend_ids(tx: Transaction, subscription: Subscription | None) -> list[int]:
