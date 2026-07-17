@@ -36,6 +36,7 @@ from app.models.enums import (
     SubscriptionCategory,
 )
 from app.models.user import User
+from app.repositories.friends import FRIENDS_UNAVAILABLE_MESSAGE, FriendsUnavailableError
 from app.repositories.payment_methods import (
     PAYMENT_METHOD_UNAVAILABLE_MESSAGE,
     PaymentMethodRepository,
@@ -399,6 +400,15 @@ async def confirm_create(
     service = SubscriptionService(session)
     try:
         sub = await service.create(dto)
+    except FriendsUnavailableError:
+        await state.update_data(friend_ids=[])
+        await state.set_state(AddSubscriptionSG.friends)
+        await callback.message.edit_text(
+            FRIENDS_UNAVAILABLE_MESSAGE,
+            reply_markup=friends_step_keyboard(),
+        )
+        await callback.answer()
+        return
     except PaymentMethodUnavailableError:
         await state.update_data(payment_method_id=None)
         await state.set_state(AddSubscriptionSG.payment_method)

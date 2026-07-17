@@ -8,6 +8,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.friend import Friend
 
 
+FRIENDS_UNAVAILABLE_MESSAGE = (
+    "Список друзей изменился или недоступен. Выберите друзей ещё раз."
+)
+
+
+class FriendsUnavailableError(LookupError):
+    """Requested friends are not all available to the current user."""
+
+    def __init__(self) -> None:
+        super().__init__(FRIENDS_UNAVAILABLE_MESSAGE)
+
+
 class FriendRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -23,6 +35,21 @@ class FriendRepository:
             select(Friend).where(Friend.id == friend_id, Friend.user_id == user_id)
         )
         return result.scalar_one_or_none()
+
+    async def list_by_ids_for_user(
+        self,
+        friend_ids: set[int],
+        user_id: int,
+    ) -> list[Friend]:
+        if not friend_ids:
+            return []
+        result = await self._session.execute(
+            select(Friend).where(
+                Friend.id.in_(friend_ids),
+                Friend.user_id == user_id,
+            )
+        )
+        return list(result.scalars().all())
 
     async def create(
         self,
