@@ -10,21 +10,15 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.filters import NotNavigationOrCommand
 from app.keyboards.main_menu import BTN_SETTINGS, main_menu_keyboard
-from app.models.debt import Debt
-from app.models.friend import Friend
-from app.models.payment_method import PaymentMethod
-from app.models.reminder_delivery import ReminderDelivery
-from app.models.subscription import Subscription
-from app.models.transaction import Transaction
 from app.models.user import User
 from app.repositories.friends import FriendRepository
 from app.repositories.payment_methods import PaymentMethodRepository
 from app.services.subscription_cards import format_reminder_offsets
+from app.services.users import UserService
 from app.ui.presentation import screen
 from app.utils.callback_data import MenuCb
 from app.utils.telegram import escape_html
@@ -225,12 +219,6 @@ async def wipe_data(message: Message, state: FSMContext, session: AsyncSession, 
         await message.answer("Удаление отменено.", reply_markup=main_menu_keyboard())
         return
 
-    uid = db_user.id
-    await session.execute(delete(ReminderDelivery).where(ReminderDelivery.user_id == uid))
-    await session.execute(delete(Debt).where(Debt.user_id == uid))
-    await session.execute(delete(Transaction).where(Transaction.user_id == uid))
-    await session.execute(delete(Subscription).where(Subscription.user_id == uid))
-    await session.execute(delete(PaymentMethod).where(PaymentMethod.user_id == uid))
-    await session.execute(delete(Friend).where(Friend.user_id == uid))
+    await UserService(session).wipe_user(db_user)
     await state.clear()
     await message.answer("✅ Все данные удалены.", reply_markup=main_menu_keyboard())

@@ -46,3 +46,7 @@ class UserService:
             first_name=first_name,
         )
         return user, False
+
+    async def wipe_user(self, user: User) -> None:
+        """Remove the user and all data they own (single transaction, no commit)."""
+        await self._repo.wipe_user(user)
