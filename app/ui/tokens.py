@@ -84,6 +84,7 @@ class Copy:
     NOTHING_TO_CANCEL = "Нечего отменять"
     OPEN_HOME = "Открой 🏠 Главная"
     CHARGE_CONFIRMED = "Списание подтверждено"
+    CHARGE_ALREADY_CONFIRMED = "Списание уже подтверждено"
     CHARGE_SAVED = "Списание сохранено"
     CHARGE_TITLE = "Списание"
     PROBLEM_TITLE = "Что произошло?"

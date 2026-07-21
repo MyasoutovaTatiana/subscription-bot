@@ -19,7 +19,7 @@ from app.keyboards.subscriptions import (
 from app.models.enums import CurrencyCode
 from app.models.user import User
 from app.services.charge_cards import format_amount_updated, format_charge_card, format_rate_updated
-from app.services.charges import ChargeService
+from app.services.charges import ChargeDateConflictError, ChargeService
 from app.services.subscription_cards import format_subscription_card
 from app.states.subscriptions import EditChargeSG
 from app.ui import Copy, human_error, toast_ok
@@ -304,6 +304,9 @@ async def edit_charge_date(
     try:
         new_date = parse_user_date((message.text or "").strip())
         await service.update_charge_date(tx, new_date)
+    except ChargeDateConflictError as exc:
+        await message.answer(str(exc))
+        return
     except ValueError as exc:
         await message.answer(str(exc) or "Не понял дату. Пример: 14.07.2026")
         return

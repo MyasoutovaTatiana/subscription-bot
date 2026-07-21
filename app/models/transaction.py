@@ -6,7 +6,7 @@ from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Date, ForeignKey, Numeric, String, Text, Boolean
+from sqlalchemy import Date, ForeignKey, Index, Numeric, String, Text, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -23,6 +23,14 @@ class Transaction(Base, TimestampMixin):
     """Recorded payment (subscription charge or one-time)."""
 
     __tablename__ = "transactions"
+    __table_args__ = (
+        Index(
+            "uq_transactions_subscription_id_transaction_date",
+            "subscription_id",
+            "transaction_date",
+            unique=True,
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)

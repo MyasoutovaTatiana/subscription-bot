@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from aiogram import Bot
@@ -19,7 +19,8 @@ from app.repositories.reminders import ReminderRepository
 from app.services.currency import CurrencyConverter
 from app.services.reminders import find_due_reminders, reminder_headline
 from app.ui.presentation import RUB_HINT, format_rub_estimate, screen
-from app.utils.callback_data import SubCb
+from app.ui.tokens import Action
+from app.utils.callback_data import SubCb, SubPeriodCb
 from app.utils.dates import format_charge_when
 from app.utils.money import format_money
 from app.utils.telegram import escape_html
@@ -27,12 +28,21 @@ from app.utils.telegram import escape_html
 logger = logging.getLogger(__name__)
 
 
-def reminder_actions_keyboard(subscription_id: int):
-    from app.ui.tokens import Action
-
+def reminder_actions_keyboard(subscription_id: int, period_date: date):
+    period = period_date.strftime("%Y%m%d")
     b = InlineKeyboardBuilder()
-    b.button(text=Action.CONFIRM_CHARGE, callback_data=SubCb(action="charged", sid=subscription_id).pack())
-    b.button(text=Action.PROBLEM, callback_data=SubCb(action="not_charged", sid=subscription_id).pack())
+    b.button(
+        text=Action.CONFIRM_CHARGE,
+        callback_data=SubPeriodCb(
+            action="charged",
+            sid=subscription_id,
+            period=period,
+        ).pack(),
+    )
+    b.button(
+        text=Action.PROBLEM,
+        callback_data=SubCb(action="not_charged", sid=subscription_id).pack(),
+    )
     b.adjust(1)
     return b.as_markup()
 
@@ -109,7 +119,7 @@ async def process_reminders_job(
                 await bot.send_message(
                     chat_id=user.telegram_chat_id,
                     text=text,
-                    reply_markup=reminder_actions_keyboard(sub.id),
+                    reply_markup=reminder_actions_keyboard(sub.id, item.charge_date),
                     parse_mode="HTML",
                 )
                 await reminder_repo.mark_sent(created, datetime.now(timezone.utc))

@@ -31,7 +31,7 @@ from app.services.charges import (
 )
 from app.services.subscriptions import CreateSubscriptionDTO, SubscriptionService
 from app.services.users import UserService
-from app.utils.callback_data import SubCb
+from app.utils.callback_data import SubPeriodCb
 
 
 @pytest_asyncio.fixture
@@ -473,6 +473,15 @@ async def test_all_public_rebuild_paths_reject_foreign_participant_before_change
     ) == counts_before
 
 
+def _period_cb(subscription: Subscription) -> SubPeriodCb:
+    assert subscription.next_charge_date is not None
+    return SubPeriodCb(
+        action="charged",
+        sid=subscription.id,
+        period=subscription.next_charge_date.strftime("%Y%m%d"),
+    )
+
+
 @pytest.mark.asyncio
 async def test_foreign_subscription_callback_does_not_confirm(
     session: AsyncSession,
@@ -486,7 +495,7 @@ async def test_foreign_subscription_callback_does_not_confirm(
 
     await cb_charged(
         callback,
-        SubCb(action="charged", sid=foreign_subscription.id),
+        _period_cb(foreign_subscription),
         state,
         session,
         current_user,
@@ -511,7 +520,7 @@ async def test_missing_subscription_callback_has_same_neutral_response(
 
     await cb_charged(
         callback,
-        SubCb(action="charged", sid=999_999),
+        SubPeriodCb(action="charged", sid=999_999, period="20260714"),
         state,
         session,
         current_user,
@@ -543,7 +552,7 @@ async def test_handler_shows_neutral_message_for_invalid_nested_data(
 
     await cb_charged(
         callback,
-        SubCb(action="charged", sid=subscription.id),
+        _period_cb(subscription),
         state,
         session,
         owner,
