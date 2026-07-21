@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import delete, select
@@ -44,6 +45,27 @@ class TransactionRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_for_subscription_period(
+        self,
+        *,
+        subscription_id: int,
+        transaction_date: date,
+        user_id: int,
+    ) -> Transaction | None:
+        """Owner-scoped lookup by unique (subscription_id, transaction_date)."""
+        result = await self._session.execute(
+            select(Transaction)
+            .options(
+                selectinload(Transaction.splits),
+                selectinload(Transaction.debts),
+            )
+            .where(
+                Transaction.subscription_id == subscription_id,
+                Transaction.transaction_date == transaction_date,
+                Transaction.user_id == user_id,
+            )
+        )
+        return result.scalar_one_or_none()
     async def update_actual_rub(self, tx: Transaction, amount: Decimal) -> Transaction:
         tx.actual_rub_amount = amount
         await self._session.flush()

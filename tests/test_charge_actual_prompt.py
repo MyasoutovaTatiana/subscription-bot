@@ -34,11 +34,17 @@ def test_problem_arose_keyboard_labels() -> None:
 
 
 def test_reminder_keyboard_simplified() -> None:
-    from app.scheduler.jobs import reminder_actions_keyboard as rem_kb
+    from datetime import date
 
-    kb = rem_kb(7)
+    from app.scheduler.jobs import reminder_actions_keyboard as rem_kb
+    from app.utils.callback_data import SubPeriodCb
+
+    kb = rem_kb(7, date(2026, 7, 14))
     labels = [btn.text for row in kb.inline_keyboard for btn in row]
     assert labels == [Action.CONFIRM_CHARGE, Action.PROBLEM]
+    confirm_data = kb.inline_keyboard[0][0].callback_data
+    assert confirm_data == SubPeriodCb(action="charged", sid=7, period="20260714").pack()
+    assert len(confirm_data.encode()) <= 64
 
 
 def test_charge_confirmed_keyboard() -> None:

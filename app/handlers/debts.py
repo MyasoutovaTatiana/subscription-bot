@@ -391,14 +391,29 @@ async def cb_friend_paid(
     if debt is None:
         await callback.answer("Не найдено", show_alert=True)
         return
-    if debt.payer_telegram_id and debt.payer_telegram_id != db_user.telegram_user_id:
+
+    # Access only for the already-bound payer (binding happens via share-token link).
+    if debt.payer_telegram_id is None or debt.payer_telegram_id != db_user.telegram_user_id:
         await callback.answer("Нет доступа", show_alert=True)
         return
+
     if debt.status == DebtStatus.PAID.value:
-        await callback.answer("Уже закрыт", show_alert=True)
+        await callback.answer("Долг уже закрыт", show_alert=True)
         return
 
-    await repo.mark_payment_reported(debt, payer_telegram_id=db_user.telegram_user_id)
+    if debt.status == DebtStatus.CANCELLED.value:
+        await callback.answer("Долг отменён", show_alert=True)
+        return
+
+    if debt.status == DebtStatus.NEEDS_REVIEW.value:
+        await callback.answer("Информация уже отправлена", show_alert=True)
+        return
+
+    if debt.status != DebtStatus.ACTIVE.value:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    await repo.mark_payment_reported(debt)
     owner = debt.user
     owner_name = _owner_first_name(owner)
     friend_name = debt.friend.name if debt.friend else db_user.first_name or "Друг"

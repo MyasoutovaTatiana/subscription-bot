@@ -106,9 +106,9 @@ class DebtRepository:
         await self._session.flush()
         return debt
 
-    async def mark_payment_reported(self, debt: Debt, *, payer_telegram_id: int) -> Debt:
+    async def mark_payment_reported(self, debt: Debt) -> Debt:
+        """Move ACTIVE debt to NEEDS_REVIEW. Does not bind payer_telegram_id."""
         debt.status = DebtStatus.NEEDS_REVIEW.value
-        debt.payer_telegram_id = payer_telegram_id
         debt.payment_reported_at = datetime.now(timezone.utc)
         debt.review_remind_at = None
         await self._session.flush()

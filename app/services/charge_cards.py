@@ -22,14 +22,21 @@ from app.ui import (
 from app.utils.dates import format_charge_when, format_date_ru, format_date_ru_short
 
 
-def format_charge_confirmed(*, next_charge_date: date | None) -> str:
+def format_charge_confirmed(
+    *,
+    next_charge_date: date | None,
+    already_confirmed: bool = False,
+) -> str:
     """Simple success after confirming a subscription charge."""
     if next_charge_date is not None:
         next_body = f"{format_date_ru_short(next_charge_date)}."
     else:
         next_body = "Без повторения"
+    headline = (
+        Copy.CHARGE_ALREADY_CONFIRMED if already_confirmed else Copy.CHARGE_CONFIRMED
+    )
     return success_screen(
-        Copy.CHARGE_CONFIRMED,
+        headline,
         field(Icon.CALENDAR, Copy.NEXT_CHARGE_LABEL, next_body),
     )
 

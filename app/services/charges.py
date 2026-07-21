@@ -2,21 +2,85 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import BillingType, ConversionMode, DebtStatus, SplitMode, TransactionType
 from app.models.subscription import Subscription
 from app.models.transaction import Transaction
 from app.repositories.debts import DebtRepository
+from app.repositories.friends import FriendRepository
+from app.repositories.payment_methods import PaymentMethodRepository
 from app.repositories.subscriptions import SubscriptionRepository
 from app.repositories.transactions import TransactionRepository
 from app.services.billing_dates import calculate_next_charge_date
 from app.services.currency import CurrencyConverter
 from app.services.debt_calculator import calculate_split
 from app.utils.money import MoneyError, ZERO, quantize_money
+
+
+CHARGE_DATA_UNAVAILABLE_MESSAGE = (
+    "Данные подписки изменились или недоступны. Проверьте способ оплаты и участников."
+)
+CHARGE_REMINDER_STALE_MESSAGE = (
+    "Это напоминание устарело. Откройте подписку или дождитесь нового напоминания."
+)
+CHARGE_DATE_CONFLICT_MESSAGE = "На эту дату списание по подписке уже есть."
+
+_PERIOD_UNIQUE_INDEX = "uq_transactions_subscription_id_transaction_date"
+
+
+class ChargeDataUnavailableError(LookupError):
+    """A subscription or one of its owner-scoped relations is unavailable."""
+
+    def __init__(self) -> None:
+        super().__init__(CHARGE_DATA_UNAVAILABLE_MESSAGE)
+
+
+class ChargeReminderStaleError(ValueError):
+    """Callback period does not match the subscription's current charge date."""
+
+    def __init__(self) -> None:
+        super().__init__(CHARGE_REMINDER_STALE_MESSAGE)
+
+
+class ChargeDateConflictError(ValueError):
+    """Changing transaction_date would violate the period unique key."""
+
+    def __init__(self) -> None:
+        super().__init__(CHARGE_DATE_CONFLICT_MESSAGE)
+
+
+@dataclass(frozen=True, slots=True)
+class ConfirmChargeResult:
+    """Outcome of confirm_charged (first confirm or idempotent replay)."""
+
+    transaction: Transaction
+    next_charge_date: date | None
+    estimated_rub: Decimal
+    actual_rub: Decimal | None
+    already_confirmed: bool = False
+
+    def __iter__(self):
+        yield self.transaction
+        yield self.next_charge_date
+        yield self.estimated_rub
+        yield self.actual_rub
+
+
+def _is_subscription_period_conflict(exc: IntegrityError) -> bool:
+    raw = str(getattr(exc, "orig", None) or exc).lower()
+    if _PERIOD_UNIQUE_INDEX in raw:
+        return True
+    return (
+        "unique" in raw
+        and "subscription_id" in raw
+        and "transaction_date" in raw
+    )
 
 
 class ChargeService:
@@ -27,48 +91,42 @@ class ChargeService:
         self._tx = TransactionRepository(session)
         self._debts = DebtRepository(session)
         self._subs = SubscriptionRepository(session)
+        self._friends = FriendRepository(session)
+        self._payment_methods = PaymentMethodRepository(session)
         self._fx = CurrencyConverter(session)
 
     async def confirm_charged(
         self,
         subscription: Subscription,
         *,
+        user_id: int,
+        period_date: date | None = None,
         charge_date: date | None = None,
         actual_rub_amount: Decimal | None = None,
-    ):
+    ) -> ConfirmChargeResult:
+        subscription = await self._validated_owned_subscription(subscription, user_id)
+
         if subscription.amount <= 0:
             raise MoneyError("Сумма подписки должна быть больше нуля")
 
-        when = charge_date or subscription.next_charge_date or date.today()
+        when = period_date or charge_date or subscription.next_charge_date or date.today()
+
+        existing = await self._tx.get_for_subscription_period(
+            subscription_id=subscription.id,
+            transaction_date=when,
+            user_id=user_id,
+        )
+        if existing is not None:
+            return self._already_confirmed_result(existing, subscription)
+
+        if period_date is not None and period_date != subscription.next_charge_date:
+            raise ChargeReminderStaleError()
+
         conv = await self._fx.convert_to_rub(
             Decimal(subscription.amount), subscription.currency, when
         )
         estimated = conv.rub_amount
         actual = quantize_money(actual_rub_amount) if actual_rub_amount is not None else None
-
-        tx = await self._tx.create(
-            user_id=subscription.user_id,
-            subscription_id=subscription.id,
-            transaction_type=TransactionType.SUBSCRIPTION.value,
-            name=subscription.name,
-            category=subscription.category,
-            original_amount=subscription.amount,
-            original_currency=subscription.currency,
-            exchange_rate=conv.unit_rate_rub,
-            exchange_rate_date=conv.rate_date,
-            estimated_rub_amount=estimated,
-            actual_rub_amount=actual,
-            is_rate_estimated=actual is None,
-            conversion_mode=(
-                ConversionMode.CBR.value if actual is None else ConversionMode.ACTUAL_RUB.value
-            ),
-            transaction_date=when,
-            payment_method_id=subscription.payment_method_id,
-            split_mode=subscription.split_mode,
-            include_owner_in_split=subscription.include_owner_in_split,
-        )
-
-        await self._rebuild_splits_and_debts(tx, subscription)
 
         next_date = calculate_next_charge_date(
             billing_type=subscription.billing_type,
@@ -76,10 +134,71 @@ class ChargeService:
             billing_day=subscription.billing_day,
             billing_interval=subscription.billing_interval,
         )
-        subscription.next_charge_date = next_date
-        await self._subs.save(subscription)
 
-        return tx, next_date, estimated, actual
+        try:
+            async with self._session.begin_nested():
+                tx = await self._tx.create(
+                    user_id=subscription.user_id,
+                    subscription_id=subscription.id,
+                    transaction_type=TransactionType.SUBSCRIPTION.value,
+                    name=subscription.name,
+                    category=subscription.category,
+                    original_amount=subscription.amount,
+                    original_currency=subscription.currency,
+                    exchange_rate=conv.unit_rate_rub,
+                    exchange_rate_date=conv.rate_date,
+                    estimated_rub_amount=estimated,
+                    actual_rub_amount=actual,
+                    is_rate_estimated=actual is None,
+                    conversion_mode=(
+                        ConversionMode.CBR.value
+                        if actual is None
+                        else ConversionMode.ACTUAL_RUB.value
+                    ),
+                    transaction_date=when,
+                    payment_method_id=subscription.payment_method_id,
+                    split_mode=subscription.split_mode,
+                    include_owner_in_split=subscription.include_owner_in_split,
+                )
+                await self._rebuild_splits_and_debts(tx, subscription)
+                subscription.next_charge_date = next_date
+                await self._subs.save(subscription)
+        except IntegrityError as exc:
+            if not _is_subscription_period_conflict(exc):
+                raise
+            raced = await self._tx.get_for_subscription_period(
+                subscription_id=subscription.id,
+                transaction_date=when,
+                user_id=user_id,
+            )
+            if raced is None:
+                raise
+            # Reload subscription after failed nested attempt (date not shifted here).
+            subscription = await self._validated_owned_subscription(subscription, user_id)
+            return self._already_confirmed_result(raced, subscription)
+
+        return ConfirmChargeResult(
+            transaction=tx,
+            next_charge_date=next_date,
+            estimated_rub=estimated,
+            actual_rub=actual,
+            already_confirmed=False,
+        )
+
+    @staticmethod
+    def _already_confirmed_result(
+        tx: Transaction,
+        subscription: Subscription,
+    ) -> ConfirmChargeResult:
+        estimated = Decimal(tx.estimated_rub_amount)
+        actual = Decimal(tx.actual_rub_amount) if tx.actual_rub_amount is not None else None
+        return ConfirmChargeResult(
+            transaction=tx,
+            next_charge_date=subscription.next_charge_date,
+            estimated_rub=estimated,
+            actual_rub=actual,
+            already_confirmed=True,
+        )
 
     async def get_for_user(self, transaction_id: int, user_id: int) -> Transaction | None:
         return await self._tx.get_for_user(transaction_id, user_id)
@@ -96,6 +215,9 @@ class ChargeService:
         amount: Decimal,
     ) -> tuple[Decimal, Decimal]:
         """Set fact ₽ amount; recalculate friend debts. Returns (was, now)."""
+        subscription = await self._subscription_for(tx)
+        await self._validate_rebuild_links(tx, subscription)
+
         was = self.effective_rub(tx)
         now = quantize_money(amount)
         if now <= ZERO:
@@ -104,7 +226,7 @@ class ChargeService:
         tx.is_rate_estimated = False
         tx.conversion_mode = ConversionMode.ACTUAL_RUB.value
         await self._tx.save(tx)
-        await self._rebuild_splits_and_debts(tx, await self._subscription_for(tx))
+        await self._rebuild_splits_and_debts(tx, subscription)
         return was, now
 
     async def update_charge_date(
@@ -116,41 +238,50 @@ class ChargeService:
         Change charge date and recompute subscription.next_charge_date from it.
         Also refresh CBR estimate for the new date when fact is not set.
         """
-        tx.transaction_date = new_date
         sub = await self._subscription_for(tx)
-        if sub is None:
-            await self._tx.save(tx)
-            return None
-
-        if tx.actual_rub_amount is None and tx.original_currency != "RUB":
-            try:
-                conv = await self._fx.convert_to_rub(
-                    Decimal(tx.original_amount),
-                    tx.original_currency,
-                    new_date,
-                )
-                tx.exchange_rate = conv.unit_rate_rub
-                tx.exchange_rate_date = conv.rate_date
-                tx.estimated_rub_amount = conv.rub_amount
-                tx.conversion_mode = ConversionMode.CBR.value
-                tx.is_rate_estimated = True
-            except Exception:  # noqa: BLE001
-                pass
-
-        next_date = calculate_next_charge_date(
-            billing_type=sub.billing_type,
-            current_charge_date=new_date,
-            billing_day=new_date.day,
-            billing_interval=sub.billing_interval,
-        )
-        sub.next_charge_date = next_date
-        if BillingType(sub.billing_type) == BillingType.MONTHLY:
-            sub.billing_day = new_date.day
-        await self._subs.save(sub)
-        await self._tx.save(tx)
         if tx.actual_rub_amount is None:
-            await self._rebuild_splits_and_debts(tx, sub)
-        return next_date
+            await self._validate_rebuild_links(tx, sub)
+
+        try:
+            async with self._session.begin_nested():
+                tx.transaction_date = new_date
+                if sub is None:
+                    await self._tx.save(tx)
+                    return None
+
+                if tx.actual_rub_amount is None and tx.original_currency != "RUB":
+                    try:
+                        conv = await self._fx.convert_to_rub(
+                            Decimal(tx.original_amount),
+                            tx.original_currency,
+                            new_date,
+                        )
+                        tx.exchange_rate = conv.unit_rate_rub
+                        tx.exchange_rate_date = conv.rate_date
+                        tx.estimated_rub_amount = conv.rub_amount
+                        tx.conversion_mode = ConversionMode.CBR.value
+                        tx.is_rate_estimated = True
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                next_date = calculate_next_charge_date(
+                    billing_type=sub.billing_type,
+                    current_charge_date=new_date,
+                    billing_day=new_date.day,
+                    billing_interval=sub.billing_interval,
+                )
+                sub.next_charge_date = next_date
+                if BillingType(sub.billing_type) == BillingType.MONTHLY:
+                    sub.billing_day = new_date.day
+                await self._subs.save(sub)
+                await self._tx.save(tx)
+                if tx.actual_rub_amount is None:
+                    await self._rebuild_splits_and_debts(tx, sub)
+                return next_date
+        except IntegrityError as exc:
+            if _is_subscription_period_conflict(exc):
+                raise ChargeDateConflictError() from exc
+            raise
 
     async def update_rate(
         self,
@@ -160,6 +291,11 @@ class ChargeService:
         """Set manual unit rate (₽ for 1 unit of original currency); update estimate."""
         if unit_rate_rub <= ZERO:
             raise MoneyError("Курс должен быть больше нуля")
+        subscription = None
+        if tx.actual_rub_amount is None:
+            subscription = await self._subscription_for(tx)
+            await self._validate_rebuild_links(tx, subscription)
+
         tx.exchange_rate = unit_rate_rub
         tx.exchange_rate_date = tx.transaction_date
         estimated = quantize_money(Decimal(tx.original_amount) * unit_rate_rub)
@@ -169,7 +305,7 @@ class ChargeService:
             tx.is_rate_estimated = True
         await self._tx.save(tx)
         if tx.actual_rub_amount is None:
-            await self._rebuild_splits_and_debts(tx, await self._subscription_for(tx))
+            await self._rebuild_splits_and_debts(tx, subscription)
         return estimated
 
     async def recalculate_debts(self, tx: Transaction) -> None:
@@ -211,6 +347,8 @@ class ChargeService:
         subscription: Subscription | None,
     ) -> None:
         friend_ids = self._friend_ids(tx, subscription)
+        await self._validate_friend_ids(friend_ids, tx.user_id)
+
         await self._tx.clear_splits(tx)
         await self._debts.delete_active_for_transaction(tx.id)
 
@@ -255,6 +393,48 @@ class ChargeService:
                 status=DebtStatus.ACTIVE.value,
             )
         self._session.expire(tx, ["debts", "splits"])
+
+    async def _validated_owned_subscription(
+        self,
+        subscription: Subscription,
+        user_id: int,
+    ) -> Subscription:
+        if subscription.user_id != user_id:
+            raise ChargeDataUnavailableError()
+        owned = await self._subs.get_for_user(subscription.id, user_id)
+        if owned is None:
+            raise ChargeDataUnavailableError()
+        await self._validate_subscription_links(owned)
+        return owned
+
+    async def _validate_subscription_links(self, subscription: Subscription) -> None:
+        if subscription.payment_method_id is not None:
+            method = await self._payment_methods.get_for_user(
+                subscription.payment_method_id,
+                subscription.user_id,
+            )
+            if method is None:
+                raise ChargeDataUnavailableError()
+        await self._validate_friend_ids(
+            [participant.friend_id for participant in subscription.participants],
+            subscription.user_id,
+        )
+
+    async def _validate_rebuild_links(
+        self,
+        tx: Transaction,
+        subscription: Subscription | None,
+    ) -> None:
+        friend_ids = self._friend_ids(tx, subscription)
+        await self._validate_friend_ids(friend_ids, tx.user_id)
+
+    async def _validate_friend_ids(self, friend_ids: list[int], user_id: int) -> None:
+        requested_ids = set(friend_ids)
+        if len(requested_ids) != len(friend_ids):
+            raise ChargeDataUnavailableError()
+        friends = await self._friends.list_by_ids_for_user(requested_ids, user_id)
+        if {friend.id for friend in friends} != requested_ids:
+            raise ChargeDataUnavailableError()
 
     @staticmethod
     def _friend_ids(tx: Transaction, subscription: Subscription | None) -> list[int]:

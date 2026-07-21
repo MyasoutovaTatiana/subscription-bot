@@ -75,6 +75,7 @@ async def test_confirm_rub_with_actual(session: AsyncSession) -> None:
     sub = await _sub(session, user.id, amount=Decimal("399"), currency="RUB")
     tx, next_date, estimated, actual = await ChargeService(session).confirm_charged(
         sub,
+        user_id=user.id,
         actual_rub_amount=Decimal("399"),
     )
     await session.commit()
@@ -91,6 +92,7 @@ async def test_confirm_usd_with_actual_rub(session: AsyncSession) -> None:
     sub = await _sub(session, user.id, amount=Decimal("20.40"), currency="USD")
     tx, _next, estimated, actual = await ChargeService(session).confirm_charged(
         sub,
+        user_id=user.id,
         actual_rub_amount=Decimal("1850.50"),
     )
     await session.commit()
@@ -105,7 +107,10 @@ async def test_confirm_usd_skip_keeps_estimate(session: AsyncSession) -> None:
     user = await _user(session)
     await _seed_rate(session, "USD", Decimal("90"))
     sub = await _sub(session, user.id, amount=Decimal("10"), currency="USD")
-    tx, _next, estimated, actual = await ChargeService(session).confirm_charged(sub)
+    tx, _next, estimated, actual = await ChargeService(session).confirm_charged(
+        sub,
+        user_id=user.id,
+    )
     await session.commit()
     assert estimated == Decimal("900.00")
     assert actual is None
@@ -120,11 +125,17 @@ async def test_confirm_eur_and_cny(session: AsyncSession) -> None:
     await _seed_rate(session, "CNY", Decimal("12.50"))
 
     eur_sub = await _sub(session, user.id, amount=Decimal("9.99"), currency="EUR")
-    _tx, _n, est_eur, _a = await ChargeService(session).confirm_charged(eur_sub)
+    _tx, _n, est_eur, _a = await ChargeService(session).confirm_charged(
+        eur_sub,
+        user_id=user.id,
+    )
     assert est_eur == Decimal("999.00")
 
     cny_sub = await _sub(session, user.id, amount=Decimal("68"), currency="CNY")
-    _tx2, _n2, est_cny, _a2 = await ChargeService(session).confirm_charged(cny_sub)
+    _tx2, _n2, est_cny, _a2 = await ChargeService(session).confirm_charged(
+        cny_sub,
+        user_id=user.id,
+    )
     assert est_cny == Decimal("850.00")
 
 
@@ -155,6 +166,7 @@ async def test_update_actual_and_undo(session: AsyncSession) -> None:
     service = ChargeService(session)
     tx, next_date, _est, _act = await service.confirm_charged(
         sub,
+        user_id=user_id,
         actual_rub_amount=Decimal("1800"),
     )
     assert next_date == date(2026, 8, 14)
@@ -197,7 +209,10 @@ async def test_delete_keeps_next_date(session: AsyncSession) -> None:
     await _seed_rate(session, "USD", Decimal("90"))
     sub = await _sub(session, user.id, amount=Decimal("10"), currency="USD")
     service = ChargeService(session)
-    tx, next_date, _e, _a = await service.confirm_charged(sub)
+    tx, next_date, _e, _a = await service.confirm_charged(
+        sub,
+        user_id=user.id,
+    )
     assert next_date == date(2026, 8, 14)
     tx = await service.get_for_user(tx.id, user.id)
     assert tx is not None

@@ -11,6 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.enums import ConversionMode, DebtStatus, SplitMode, TransactionType
 from app.models.transaction import Transaction
 from app.repositories.debts import DebtRepository
+from app.repositories.friends import FriendRepository, FriendsUnavailableError
+from app.repositories.payment_methods import (
+    PaymentMethodRepository,
+    PaymentMethodUnavailableError,
+)
 from app.repositories.transactions import TransactionRepository
 from app.services.currency import CurrencyConverter
 from app.services.debt_calculator import ParticipantShare, calculate_split
@@ -47,6 +52,23 @@ class TransactionService:
     async def create_one_time(self, dto: CreateOneTimePaymentDTO) -> Transaction:
         if dto.original_amount <= 0:
             raise MoneyError("Нельзя создать платёж с нулевой или отрицательной суммой")
+
+        friend_ids = list(dict.fromkeys(dto.friend_ids))
+        requested_friend_ids = set(friend_ids)
+        friends = await FriendRepository(self._session).list_by_ids_for_user(
+            requested_friend_ids,
+            dto.user_id,
+        )
+        if {friend.id for friend in friends} != requested_friend_ids:
+            raise FriendsUnavailableError()
+
+        if dto.payment_method_id is not None:
+            method = await PaymentMethodRepository(self._session).get_active_for_user(
+                dto.payment_method_id,
+                dto.user_id,
+            )
+            if method is None:
+                raise PaymentMethodUnavailableError()
 
         exchange_rate: Decimal | None
         exchange_rate_date: date | None
@@ -101,21 +123,27 @@ class TransactionService:
             notes=dto.notes,
         )
 
-        if dto.split_mode and (dto.friend_ids or dto.include_owner_in_split):
-            shares = self._build_shares(dto, rub_for_split)
+        if dto.split_mode and (friend_ids or dto.include_owner_in_split):
+            shares = self._build_shares(dto, rub_for_split, friend_ids=friend_ids)
             await self._persist_shares(tx, shares, dto, is_estimated=actual is None)
 
         loaded = await self._tx_repo.get_for_user(tx.id, dto.user_id)
         assert loaded is not None
         return loaded
 
-    def _build_shares(self, dto: CreateOneTimePaymentDTO, total_rub: Decimal) -> list[ParticipantShare]:
+    def _build_shares(
+        self,
+        dto: CreateOneTimePaymentDTO,
+        total_rub: Decimal,
+        *,
+        friend_ids: list[int],
+    ) -> list[ParticipantShare]:
         mode = SplitMode(dto.split_mode or SplitMode.EQUAL.value)
         if mode == SplitMode.EQUAL:
             return calculate_split(
                 mode,
                 total_rub,
-                friend_ids=dto.friend_ids,
+                friend_ids=friend_ids,
                 include_owner=dto.include_owner_in_split,
             )
         if mode == SplitMode.PERCENT:
@@ -123,7 +151,7 @@ class TransactionService:
             mapping = dto.percent_map or {}
             if dto.include_owner_in_split:
                 percents.append((None, True, mapping.get(None, Decimal("0"))))
-            for fid in dto.friend_ids:
+            for fid in friend_ids:
                 percents.append((fid, False, mapping.get(fid, Decimal("0"))))
             return calculate_split(mode, total_rub, percents=percents)
         if mode == SplitMode.FIXED:
@@ -131,7 +159,7 @@ class TransactionService:
             mapping = dto.fixed_map or {}
             if dto.include_owner_in_split:
                 fixed.append((None, True, mapping.get(None, Decimal("0"))))
-            for fid in dto.friend_ids:
+            for fid in friend_ids:
                 fixed.append((fid, False, mapping.get(fid, Decimal("0"))))
             return calculate_split(mode, total_rub, fixed=fixed)
         raise MoneyError("Такое деление пока недоступно")

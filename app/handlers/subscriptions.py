@@ -36,9 +36,21 @@ from app.models.enums import (
     SubscriptionCategory,
 )
 from app.models.user import User
-from app.repositories.payment_methods import PaymentMethodRepository
+from app.repositories.friends import FRIENDS_UNAVAILABLE_MESSAGE, FriendsUnavailableError
+from app.repositories.payment_methods import (
+    PAYMENT_METHOD_UNAVAILABLE_MESSAGE,
+    PaymentMethodRepository,
+    PaymentMethodUnavailableError,
+)
 from app.services.billing_dates import billing_label_short
 from app.services.charge_cards import format_charge_confirmed
+from app.services.charges import (
+    CHARGE_DATA_UNAVAILABLE_MESSAGE,
+    CHARGE_REMINDER_STALE_MESSAGE,
+    ChargeDataUnavailableError,
+    ChargeReminderStaleError,
+    ChargeService,
+)
 from app.services.subscription_cards import (
     format_reminder_offsets,
     format_subscription_card,
@@ -57,12 +69,22 @@ from app.ui import (
     toast_cancelled,
 )
 from app.ui.presentation import format_rub_estimate
-from app.utils.callback_data import MenuCb, SubCb
+from app.utils.callback_data import MenuCb, SubCb, SubPeriodCb
 from app.utils.dates import format_charge_when, parse_user_date
 from app.utils.money import MoneyError, format_money, parse_amount
 from app.utils.telegram import escape_html
 
 router = Router(name="subscriptions")
+
+
+def _parse_callback_period(period: str) -> date | None:
+    """Parse ``YYYYMMDD`` from callback; invalid values are treated as stale."""
+    if len(period) != 8 or not period.isdigit():
+        return None
+    try:
+        return date(int(period[0:4]), int(period[4:6]), int(period[6:8]))
+    except ValueError:
+        return None
 
 
 # ── entry points ────────────────────────────────────────────────────────────
@@ -393,7 +415,27 @@ async def confirm_create(
         friend_ids=list(data.get("friend_ids") or []),
     )
     service = SubscriptionService(session)
-    sub = await service.create(dto)
+    try:
+        sub = await service.create(dto)
+    except FriendsUnavailableError:
+        await state.update_data(friend_ids=[])
+        await state.set_state(AddSubscriptionSG.friends)
+        await callback.message.edit_text(
+            FRIENDS_UNAVAILABLE_MESSAGE,
+            reply_markup=friends_step_keyboard(),
+        )
+        await callback.answer()
+        return
+    except PaymentMethodUnavailableError:
+        await state.update_data(payment_method_id=None)
+        await state.set_state(AddSubscriptionSG.payment_method)
+        methods = await PaymentMethodRepository(session).list_active(db_user.id)
+        await callback.message.edit_text(
+            PAYMENT_METHOD_UNAVAILABLE_MESSAGE,
+            reply_markup=payment_methods_keyboard(methods),
+        )
+        await callback.answer()
+        return
     await state.clear()
 
     estimated = None
@@ -550,10 +592,10 @@ async def cb_edit_menu(callback: CallbackQuery, callback_data: SubCb) -> None:
     await callback.answer()
 
 
-@router.callback_query(SubCb.filter(F.action == "charged"))
+@router.callback_query(SubPeriodCb.filter(F.action == "charged"))
 async def cb_charged(
     callback: CallbackQuery,
-    callback_data: SubCb,
+    callback_data: SubPeriodCb,
     state: FSMContext,
     session: AsyncSession,
     db_user: User,
@@ -564,19 +606,48 @@ async def cb_charged(
         await callback.answer("Подписка не найдена", show_alert=True)
         return
 
+    period_date = _parse_callback_period(callback_data.period)
+    if period_date is None:
+        await callback.answer(CHARGE_REMINDER_STALE_MESSAGE, show_alert=True)
+        return
+
     try:
         await _complete_charge(
             callback.message,
             session,
             state,
             sub,
+            user_id=db_user.id,
+            period_date=period_date,
             actual_rub=None,
             edit=True,
         )
+    except ChargeReminderStaleError:
+        await callback.answer(CHARGE_REMINDER_STALE_MESSAGE, show_alert=True)
+        return
+    except ChargeDataUnavailableError:
+        await callback.answer(CHARGE_DATA_UNAVAILABLE_MESSAGE, show_alert=True)
+        return
     except Exception as exc:  # noqa: BLE001
         await callback.answer(human_error(str(exc)), show_alert=True)
         return
     await callback.answer()
+
+
+@router.callback_query(SubCb.filter(F.action == "charged"))
+async def cb_charged_legacy(
+    callback: CallbackQuery,
+    callback_data: SubCb,
+    session: AsyncSession,
+    db_user: User,
+) -> None:
+    """Old reminders without period must not confirm the current/next period."""
+    service = SubscriptionService(session)
+    sub = await service.get(callback_data.sid, db_user.id)
+    if sub is None:
+        await callback.answer("Подписка не найдена", show_alert=True)
+        return
+    await callback.answer(CHARGE_REMINDER_STALE_MESSAGE, show_alert=True)
 
 
 @router.callback_query(SubCb.filter(F.action == "chg_skip"), ConfirmChargeSG.actual_rub)
@@ -594,15 +665,26 @@ async def cb_charge_skip(
         await state.clear()
         await callback.answer("Подписка не найдена", show_alert=True)
         return
+    if sub.next_charge_date is None:
+        await callback.answer(CHARGE_REMINDER_STALE_MESSAGE, show_alert=True)
+        return
     try:
         await _complete_charge(
             callback.message,
             session,
             state,
             sub,
+            user_id=db_user.id,
+            period_date=sub.next_charge_date,
             actual_rub=None,
             edit=True,
         )
+    except ChargeReminderStaleError:
+        await callback.answer(CHARGE_REMINDER_STALE_MESSAGE, show_alert=True)
+        return
+    except ChargeDataUnavailableError:
+        await callback.answer(CHARGE_DATA_UNAVAILABLE_MESSAGE, show_alert=True)
+        return
     except Exception as exc:  # noqa: BLE001
         await callback.answer(human_error(str(exc)), show_alert=True)
         return
@@ -662,6 +744,14 @@ async def charge_actual_rub_entered(
         await message.answer("Подписка не найдена.", reply_markup=main_menu_keyboard())
         return
 
+    if sub.next_charge_date is None:
+        await state.clear()
+        await message.answer(
+            CHARGE_REMINDER_STALE_MESSAGE,
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+
     raw = (message.text or "").strip()
     try:
         amount = parse_amount(raw)
@@ -675,8 +765,20 @@ async def charge_actual_rub_entered(
             session,
             state,
             sub,
+            user_id=db_user.id,
+            period_date=sub.next_charge_date,
             actual_rub=amount,
             edit=False,
+        )
+    except ChargeReminderStaleError:
+        await message.answer(
+            CHARGE_REMINDER_STALE_MESSAGE,
+            reply_markup=main_menu_keyboard(),
+        )
+    except ChargeDataUnavailableError:
+        await message.answer(
+            CHARGE_DATA_UNAVAILABLE_MESSAGE,
+            reply_markup=main_menu_keyboard(),
         )
     except Exception as exc:  # noqa: BLE001
         await message.answer(human_error(str(exc)), reply_markup=main_menu_keyboard())
@@ -688,18 +790,23 @@ async def _complete_charge(
     state: FSMContext,
     sub,
     *,
+    user_id: int,
+    period_date: date,
     actual_rub: Decimal | None,
     edit: bool,
 ) -> None:
-    from app.services.charges import ChargeService
-
-    _tx, next_date, _estimated, _actual = await ChargeService(session).confirm_charged(
+    result = await ChargeService(session).confirm_charged(
         sub,
+        user_id=user_id,
+        period_date=period_date,
         actual_rub_amount=actual_rub,
     )
     await state.clear()
 
-    text = format_charge_confirmed(next_charge_date=next_date)
+    text = format_charge_confirmed(
+        next_charge_date=result.next_charge_date,
+        already_confirmed=result.already_confirmed,
+    )
     markup = charge_confirmed_keyboard(sub.id)
     if edit:
         await target.edit_text(text, reply_markup=markup, parse_mode="HTML")

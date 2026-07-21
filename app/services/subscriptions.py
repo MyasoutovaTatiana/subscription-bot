@@ -10,6 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import BillingType, DEFAULT_REMINDER_OFFSETS, SplitMode
 from app.models.subscription import Subscription
+from app.repositories.friends import FriendRepository, FriendsUnavailableError
+from app.repositories.payment_methods import (
+    PaymentMethodRepository,
+    PaymentMethodUnavailableError,
+)
 from app.repositories.subscriptions import SubscriptionRepository
 from app.utils.money import MoneyError, parse_amount
 
@@ -43,6 +48,23 @@ class SubscriptionService:
         if dto.amount <= 0:
             raise MoneyError("Сумма должна быть больше нуля")
 
+        friend_ids = list(dict.fromkeys(dto.friend_ids or []))
+        requested_friend_ids = set(friend_ids)
+        friends = await FriendRepository(self._session).list_by_ids_for_user(
+            requested_friend_ids,
+            dto.user_id,
+        )
+        if {friend.id for friend in friends} != requested_friend_ids:
+            raise FriendsUnavailableError()
+
+        if dto.payment_method_id is not None:
+            method = await PaymentMethodRepository(self._session).get_active_for_user(
+                dto.payment_method_id,
+                dto.user_id,
+            )
+            if method is None:
+                raise PaymentMethodUnavailableError()
+
         billing_type = BillingType(dto.billing_type)
         if billing_type == BillingType.MONTHLY and dto.billing_day is None and dto.next_charge_date:
             billing_day = dto.next_charge_date.day
@@ -72,7 +94,7 @@ class SubscriptionService:
             is_active=True,
         )
 
-        for friend_id in dto.friend_ids or []:
+        for friend_id in friend_ids:
             await self._repo.add_participant(subscription_id=sub.id, friend_id=friend_id)
 
         # reload with relationships

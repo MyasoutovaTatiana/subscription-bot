@@ -24,8 +24,16 @@ from app.keyboards.payments import (
 from app.keyboards.subscriptions import payment_methods_keyboard
 from app.models.enums import ConversionMode, CurrencyCode, SplitMode, SubscriptionCategory
 from app.models.user import User
-from app.repositories.friends import FriendRepository
-from app.repositories.payment_methods import PaymentMethodRepository
+from app.repositories.friends import (
+    FRIENDS_UNAVAILABLE_MESSAGE,
+    FriendRepository,
+    FriendsUnavailableError,
+)
+from app.repositories.payment_methods import (
+    PAYMENT_METHOD_UNAVAILABLE_MESSAGE,
+    PaymentMethodRepository,
+    PaymentMethodUnavailableError,
+)
 from app.services.currency import CurrencyConverter
 from app.services.transactions import CreateOneTimePaymentDTO, TransactionService
 from app.states.payments import OneTimePaymentSG
@@ -451,6 +459,21 @@ async def ot_confirm(
     )
     try:
         tx = await TransactionService(session).create_one_time(dto)
+    except FriendsUnavailableError:
+        await state.update_data(selected_friend_ids=[])
+        await state.set_state(OneTimePaymentSG.friends)
+        friends = await FriendRepository(session).list_for_user(db_user.id)
+        await callback.message.edit_text(
+            FRIENDS_UNAVAILABLE_MESSAGE,
+            reply_markup=friends_select_keyboard(friends, set()),
+        )
+        await callback.answer()
+        return
+    except PaymentMethodUnavailableError:
+        await state.update_data(payment_method_id=None)
+        await _go_payment_method(callback.message, state, session, db_user, edit=True)
+        await callback.answer(PAYMENT_METHOD_UNAVAILABLE_MESSAGE, show_alert=True)
+        return
     except (MoneyError, LookupError, ValueError) as exc:
         await callback.answer(str(exc), show_alert=True)
         return
