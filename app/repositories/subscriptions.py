@@ -38,6 +38,26 @@ class SubscriptionRepository:
         await self._session.flush()
         return row
 
+    async def replace_participants(
+        self,
+        *,
+        subscription: Subscription,
+        friend_ids: list[int],
+    ) -> None:
+        retained_shares = {
+            participant.friend_id: participant.share_value
+            for participant in subscription.participants
+        }
+        subscription.participants.clear()
+        for friend_id in friend_ids:
+            subscription.participants.append(
+                SubscriptionParticipant(
+                    friend_id=friend_id,
+                    share_value=retained_shares.get(friend_id),
+                )
+            )
+        await self._session.flush()
+
     async def list_active(self, user_id: int) -> list[Subscription]:
         result = await self._session.execute(
             select(Subscription)

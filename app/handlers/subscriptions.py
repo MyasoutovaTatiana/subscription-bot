@@ -25,6 +25,7 @@ from app.keyboards.subscriptions import (
     payment_methods_keyboard,
     problem_arose_keyboard,
     reminders_keyboard,
+    subscription_friends_select_keyboard,
     subscription_card_keyboard,
     subscriptions_list_keyboard,
 )
@@ -36,7 +37,11 @@ from app.models.enums import (
     SubscriptionCategory,
 )
 from app.models.user import User
-from app.repositories.friends import FRIENDS_UNAVAILABLE_MESSAGE, FriendsUnavailableError
+from app.repositories.friends import (
+    FRIENDS_UNAVAILABLE_MESSAGE,
+    FriendRepository,
+    FriendsUnavailableError,
+)
 from app.repositories.payment_methods import (
     PAYMENT_METHOD_UNAVAILABLE_MESSAGE,
     PaymentMethodRepository,
@@ -350,12 +355,176 @@ async def add_reminders(callback: CallbackQuery, callback_data: MenuCb, state: F
 
 
 @router.callback_query(AddSubscriptionSG.friends, MenuCb.filter(F.action == "fr"))
-async def add_friends_step(callback: CallbackQuery, state: FSMContext, session: AsyncSession, db_user: User) -> None:
+async def add_friends_step(
+    callback: CallbackQuery,
+    callback_data: MenuCb,
+    state: FSMContext,
+    session: AsyncSession,
+    db_user: User,
+) -> None:
+    if callback_data.value == "none":
+        await _finish_add_friends(callback.message, state, session, db_user, [])
+        await callback.answer()
+        return
+    if callback_data.value != "with":
+        await callback.answer("Выбор устарел", show_alert=True)
+        return
+
     await state.update_data(friend_ids=[])
+    await _show_subscription_friend_picker(
+        callback.message,
+        session,
+        db_user,
+        selected_ids=set(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(AddSubscriptionSG.friends, MenuCb.filter(F.action == "sfr"))
+async def add_friends_toggle(
+    callback: CallbackQuery,
+    callback_data: MenuCb,
+    state: FSMContext,
+    session: AsyncSession,
+    db_user: User,
+) -> None:
+    data = await state.get_data()
+    selected = set(data.get("friend_ids") or [])
+    value = callback_data.value
+
+    if value == "new":
+        await state.set_state(AddSubscriptionSG.new_friend_name)
+        await callback.message.edit_text("👥 <b>Новый друг</b>\n\nВведи имя:", parse_mode="HTML")
+        await callback.answer()
+        return
+    if value == "none":
+        await _finish_add_friends(callback.message, state, session, db_user, [])
+        await callback.answer()
+        return
+    if value == "done":
+        if not selected:
+            await callback.answer(
+                "Выбери хотя бы одного друга или нажми «Без друзей»",
+                show_alert=True,
+            )
+            return
+        try:
+            selected = await _validate_selected_friends(session, db_user, selected)
+        except FriendsUnavailableError:
+            await state.update_data(friend_ids=[])
+            await _show_subscription_friend_picker(
+                callback.message,
+                session,
+                db_user,
+                selected_ids=set(),
+            )
+            await callback.answer(FRIENDS_UNAVAILABLE_MESSAGE, show_alert=True)
+            return
+        await _finish_add_friends(
+            callback.message,
+            state,
+            session,
+            db_user,
+            list(selected),
+        )
+        await callback.answer()
+        return
+
+    try:
+        friend_id = int(value)
+    except (TypeError, ValueError):
+        await callback.answer(FRIENDS_UNAVAILABLE_MESSAGE, show_alert=True)
+        return
+    friend = await FriendRepository(session).get_for_user(friend_id, db_user.id)
+    if friend is None:
+        await callback.answer(FRIENDS_UNAVAILABLE_MESSAGE, show_alert=True)
+        return
+    if friend_id in selected:
+        selected.remove(friend_id)
+    else:
+        selected.add(friend_id)
+    await state.update_data(friend_ids=list(selected))
+    await _show_subscription_friend_picker(
+        callback.message,
+        session,
+        db_user,
+        selected_ids=selected,
+        edit_markup_only=True,
+    )
+    await callback.answer()
+
+
+@router.message(AddSubscriptionSG.new_friend_name, NotNavigationOrCommand())
+async def add_subscription_new_friend(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    db_user: User,
+) -> None:
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("Введи имя.")
+        return
+    friend = await FriendRepository(session).create(user_id=db_user.id, name=name)
+    data = await state.get_data()
+    selected = set(data.get("friend_ids") or [])
+    selected.add(friend.id)
+    await state.update_data(friend_ids=list(selected))
+    await state.set_state(AddSubscriptionSG.friends)
+    friends = await FriendRepository(session).list_for_user(db_user.id)
+    await message.answer(
+        f"Добавлен: {escape_html(name)}",
+        reply_markup=subscription_friends_select_keyboard(friends, selected),
+        parse_mode="HTML",
+    )
+
+
+async def _validate_selected_friends(
+    session: AsyncSession,
+    db_user: User,
+    selected_ids: set[int],
+) -> set[int]:
+    friends = await FriendRepository(session).list_by_ids_for_user(selected_ids, db_user.id)
+    if {friend.id for friend in friends} != selected_ids:
+        raise FriendsUnavailableError()
+    return {friend.id for friend in friends}
+
+
+async def _show_subscription_friend_picker(
+    message: Message,
+    session: AsyncSession,
+    db_user: User,
+    *,
+    selected_ids: set[int],
+    edit_markup_only: bool = False,
+) -> None:
+    friends = await FriendRepository(session).list_for_user(db_user.id)
+    keyboard = subscription_friends_select_keyboard(friends, selected_ids)
+    if edit_markup_only:
+        await message.edit_reply_markup(reply_markup=keyboard)
+        return
+    await message.edit_text(
+        "👥 <b>Друзья</b>\n\nОтметь участников подписки:",
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+
+
+async def _finish_add_friends(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    db_user: User,
+    friend_ids: list[int],
+) -> None:
+    await state.update_data(friend_ids=list(dict.fromkeys(friend_ids)))
     await state.set_state(AddSubscriptionSG.confirm)
     text = await _preview_text(state, session, db_user)
-    await callback.message.edit_text(text, reply_markup=confirm_subscription_keyboard(), parse_mode="HTML")
-    await callback.answer()
+    await message.edit_text(
+        text,
+        reply_markup=confirm_subscription_keyboard(),
+        parse_mode="HTML",
+    )
 
 
 async def _preview_text(state: FSMContext, session: AsyncSession, db_user: User) -> str:
@@ -394,15 +563,24 @@ async def _preview_text(state: FSMContext, session: AsyncSession, db_user: User)
     cost_block = cost if not rub_line else f"{cost}\n{rub_line}"
     when = format_charge_when(next_date) if next_date else "Не задана"
     reminders = format_reminder_offsets(list(data.get("reminder_offsets") or []))
+    friend_ids = set(data.get("friend_ids") or [])
+    friends = await FriendRepository(session).list_by_ids_for_user(friend_ids, db_user.id)
+    friend_names = [escape_html(friend.name) for friend in friends]
 
-    return screen(
-        "✅ Проверь подписку",
+    blocks = [
         f"💳 <b>{escape_html(data['name'])}</b>",
         f"💰 Стоимость\n{cost_block}",
         f"📅 Следующее списание\n{when}",
         f"🔄 Повтор\n{period}",
         f"💳 Способ оплаты\n{escape_html(card)}",
         f"🔔 Напоминания\n{reminders}",
+    ]
+    if friend_names:
+        blocks.append("👥 Друзья\n" + "\n".join(f"• {name}" for name in friend_names))
+
+    return screen(
+        "✅ Проверь подписку",
+        *blocks,
     )
 
 
@@ -604,9 +782,25 @@ async def cb_edit_field(
     session: AsyncSession,
     db_user: User,
 ) -> None:
-    if await _owned_subscription_or_alert(callback, session, db_user, callback_data.sid) is None:
+    sub = await _owned_subscription_or_alert(callback, session, db_user, callback_data.sid)
+    if sub is None:
         return
     field = callback_data.action.removeprefix("ef_")
+    if field == "friends":
+        selected = {participant.friend_id for participant in sub.participants}
+        await state.set_state(EditSubscriptionSG.friends)
+        await state.update_data(
+            edit_sid=callback_data.sid,
+            edit_friend_ids=list(selected),
+        )
+        await _show_subscription_friend_picker(
+            callback.message,
+            session,
+            db_user,
+            selected_ids=selected,
+        )
+        await callback.answer()
+        return
     await state.set_state(EditSubscriptionSG.value)
     await state.update_data(edit_sid=callback_data.sid, edit_field=field)
     prompts = {
@@ -618,6 +812,143 @@ async def cb_edit_field(
     }
     await callback.message.edit_text(prompts.get(field, "Новое значение:"))
     await callback.answer()
+
+
+@router.callback_query(EditSubscriptionSG.friends, MenuCb.filter(F.action == "sfr"))
+async def edit_friends_toggle(
+    callback: CallbackQuery,
+    callback_data: MenuCb,
+    state: FSMContext,
+    session: AsyncSession,
+    db_user: User,
+) -> None:
+    data = await state.get_data()
+    sid = int(data.get("edit_sid") or 0)
+    selected = set(data.get("edit_friend_ids") or [])
+    value = callback_data.value
+
+    if await SubscriptionService(session).get(sid, db_user.id) is None:
+        await state.clear()
+        await callback.answer("Подписка не найдена", show_alert=True)
+        return
+    if value == "new":
+        await state.set_state(EditSubscriptionSG.new_friend_name)
+        await callback.message.edit_text("👥 <b>Новый друг</b>\n\nВведи имя:", parse_mode="HTML")
+        await callback.answer()
+        return
+    if value == "none":
+        await _save_edited_friends(callback, state, session, db_user, sid, [])
+        return
+    if value == "done":
+        if not selected:
+            await callback.answer(
+                "Выбери хотя бы одного друга или нажми «Без друзей»",
+                show_alert=True,
+            )
+            return
+        await _save_edited_friends(
+            callback,
+            state,
+            session,
+            db_user,
+            sid,
+            list(selected),
+        )
+        return
+
+    try:
+        friend_id = int(value)
+    except (TypeError, ValueError):
+        await callback.answer(FRIENDS_UNAVAILABLE_MESSAGE, show_alert=True)
+        return
+    friend = await FriendRepository(session).get_for_user(friend_id, db_user.id)
+    if friend is None:
+        await callback.answer(FRIENDS_UNAVAILABLE_MESSAGE, show_alert=True)
+        return
+    if friend_id in selected:
+        selected.remove(friend_id)
+    else:
+        selected.add(friend_id)
+    await state.update_data(edit_friend_ids=list(selected))
+    await _show_subscription_friend_picker(
+        callback.message,
+        session,
+        db_user,
+        selected_ids=selected,
+        edit_markup_only=True,
+    )
+    await callback.answer()
+
+
+@router.message(EditSubscriptionSG.new_friend_name, NotNavigationOrCommand())
+async def edit_subscription_new_friend(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    db_user: User,
+) -> None:
+    data = await state.get_data()
+    sid = int(data.get("edit_sid") or 0)
+    if await SubscriptionService(session).get(sid, db_user.id) is None:
+        await state.clear()
+        await message.answer("Подписка не найдена.", reply_markup=main_menu_keyboard())
+        return
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("Введи имя.")
+        return
+    friend = await FriendRepository(session).create(user_id=db_user.id, name=name)
+    selected = set(data.get("edit_friend_ids") or [])
+    selected.add(friend.id)
+    await state.update_data(edit_friend_ids=list(selected))
+    await state.set_state(EditSubscriptionSG.friends)
+    friends = await FriendRepository(session).list_for_user(db_user.id)
+    await message.answer(
+        f"Добавлен: {escape_html(name)}",
+        reply_markup=subscription_friends_select_keyboard(friends, selected),
+        parse_mode="HTML",
+    )
+
+
+async def _save_edited_friends(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    db_user: User,
+    subscription_id: int,
+    friend_ids: list[int],
+) -> None:
+    service = SubscriptionService(session)
+    sub = await service.get(subscription_id, db_user.id)
+    if sub is None:
+        await state.clear()
+        await callback.answer("Подписка не найдена", show_alert=True)
+        return
+    try:
+        sub = await service.update_friends(
+            sub,
+            user_id=db_user.id,
+            friend_ids=friend_ids,
+        )
+    except FriendsUnavailableError:
+        await state.update_data(edit_friend_ids=[])
+        await state.set_state(EditSubscriptionSG.friends)
+        await _show_subscription_friend_picker(
+            callback.message,
+            session,
+            db_user,
+            selected_ids=set(),
+        )
+        await callback.answer(FRIENDS_UNAVAILABLE_MESSAGE, show_alert=True)
+        return
+
+    await state.clear()
+    await callback.message.edit_text(
+        format_subscription_card(sub, title="✅ Обновлено"),
+        reply_markup=subscription_card_keyboard(sub),
+        parse_mode="HTML",
+    )
+    await callback.answer("Сохранено")
 
 
 @router.callback_query(SubCb.filter(F.action == "edit"))

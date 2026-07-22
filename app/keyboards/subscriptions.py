@@ -12,6 +12,7 @@ from app.models.enums import (
     CATEGORY_LABELS,
     CurrencyCode,
 )
+from app.models.friend import Friend
 from app.models.payment_method import PaymentMethod
 from app.models.subscription import Subscription
 from app.services.subscription_cards import format_subscription_list_row
@@ -82,8 +83,32 @@ def reminders_keyboard() -> InlineKeyboardMarkup:
 def friends_step_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text=Action.NO_FRIENDS, callback_data=MenuCb(action="fr", value="none").pack())
-    builder.button(text=Action.LATER, callback_data=MenuCb(action="fr", value="later").pack())
+    builder.button(text=Action.WITH_FRIENDS, callback_data=MenuCb(action="fr", value="with").pack())
     builder.adjust(2)
+    return builder.as_markup()
+
+
+def subscription_friends_select_keyboard(
+    friends: list[Friend],
+    selected_ids: set[int],
+) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for friend in friends:
+        mark = "✅ " if friend.id in selected_ids else ""
+        builder.button(
+            text=f"{mark}{friend.name}",
+            callback_data=MenuCb(action="sfr", value=str(friend.id)).pack(),
+        )
+    builder.button(
+        text=Action.NEW_FRIEND,
+        callback_data=MenuCb(action="sfr", value="new").pack(),
+    )
+    builder.button(text=Action.DONE, callback_data=MenuCb(action="sfr", value="done").pack())
+    builder.button(
+        text=Action.NO_FRIENDS,
+        callback_data=MenuCb(action="sfr", value="none").pack(),
+    )
+    builder.adjust(1)
     return builder.as_markup()
 
 
@@ -142,6 +167,7 @@ def edit_fields_keyboard(subscription_id: int) -> InlineKeyboardMarkup:
         ("amount", "Сумма"),
         ("currency", "Валюта"),
         ("next_charge_date", "Дата"),
+        ("friends", "Друзья"),
         ("notes", "Заметка"),
     ]
     for key, label in fields:

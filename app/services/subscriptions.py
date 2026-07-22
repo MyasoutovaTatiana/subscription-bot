@@ -155,6 +155,31 @@ class SubscriptionService:
                 setattr(subscription, key, value)
         return await self._repo.save(subscription)
 
+    async def update_friends(
+        self,
+        subscription: Subscription,
+        *,
+        user_id: int,
+        friend_ids: list[int],
+    ) -> Subscription:
+        subscription = await self._validated_owned_subscription(subscription, user_id)
+        unique_friend_ids = list(dict.fromkeys(friend_ids))
+        requested_friend_ids = set(unique_friend_ids)
+        friends = await FriendRepository(self._session).list_by_ids_for_user(
+            requested_friend_ids,
+            user_id,
+        )
+        if {friend.id for friend in friends} != requested_friend_ids:
+            raise FriendsUnavailableError()
+
+        await self._repo.replace_participants(
+            subscription=subscription,
+            friend_ids=unique_friend_ids,
+        )
+        loaded = await self._repo.get_for_user(subscription.id, user_id)
+        assert loaded is not None
+        return loaded
+
     async def _validated_owned_subscription(
         self,
         subscription: Subscription,

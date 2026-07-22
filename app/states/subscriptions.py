@@ -15,12 +15,15 @@ class AddSubscriptionSG(StatesGroup):
     new_payment_method_name = State()
     reminders = State()
     friends = State()
+    new_friend_name = State()
     confirm = State()
 
 
 class EditSubscriptionSG(StatesGroup):
     field = State()
     value = State()
+    friends = State()
+    new_friend_name = State()
 
 
 class ConfirmChargeSG(StatesGroup):
