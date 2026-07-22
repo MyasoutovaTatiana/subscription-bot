@@ -271,7 +271,13 @@ async def cb_edit(
     callback: CallbackQuery,
     callback_data: DebtCb,
     state: FSMContext,
+    session: AsyncSession,
+    db_user: User,
 ) -> None:
+    debt = await DebtRepository(session).get_for_user(callback_data.did, db_user.id)
+    if debt is None:
+        await callback.answer("Долг не найден", show_alert=True)
+        return
     await state.set_state(EditDebtSG.amount)
     await state.update_data(debt_id=callback_data.did)
     await callback.message.edit_text(screen(title(Icon.EDIT, "Новая сумма"), "Введи сумму в ₽"), parse_mode="HTML")

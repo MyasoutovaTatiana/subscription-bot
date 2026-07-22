@@ -30,6 +30,19 @@ from app.utils.money import MoneyError, parse_amount
 router = Router(name="charges")
 
 
+async def _owned_charge_or_alert(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    db_user: User,
+    transaction_id: int,
+):
+    """Resolve callback IDs in the owner's scope before changing UI/FSM state."""
+    tx = await ChargeService(session).get_for_user(transaction_id, db_user.id)
+    if tx is None:
+        await callback.answer("Списание не найдено", show_alert=True)
+    return tx
+
+
 def _next_date(tx) -> object:
     sub = getattr(tx, "subscription", None)
     return sub.next_charge_date if sub is not None else None
@@ -78,7 +91,11 @@ async def cb_tx_amt(
     callback: CallbackQuery,
     callback_data: TxCb,
     state: FSMContext,
+    session: AsyncSession,
+    db_user: User,
 ) -> None:
+    if await _owned_charge_or_alert(callback, session, db_user, callback_data.tid) is None:
+        return
     await state.set_state(EditChargeSG.amount)
     await state.update_data(edit_tid=callback_data.tid)
     await callback.message.answer(
@@ -93,7 +110,11 @@ async def cb_tx_date(
     callback: CallbackQuery,
     callback_data: TxCb,
     state: FSMContext,
+    session: AsyncSession,
+    db_user: User,
 ) -> None:
+    if await _owned_charge_or_alert(callback, session, db_user, callback_data.tid) is None:
+        return
     await state.set_state(EditChargeSG.date)
     await state.update_data(edit_tid=callback_data.tid)
     await callback.message.answer("Новая дата списания\nНапример: 14.07.2026")
@@ -145,7 +166,11 @@ async def cb_tx_recalc(
 async def cb_tx_undo_ask(
     callback: CallbackQuery,
     callback_data: TxCb,
+    session: AsyncSession,
+    db_user: User,
 ) -> None:
+    if await _owned_charge_or_alert(callback, session, db_user, callback_data.tid) is None:
+        return
     await callback.message.edit_text(
         "↩️ Отменить списание?\n\n"
         "Транзакция и долги будут удалены.\n"
@@ -159,7 +184,11 @@ async def cb_tx_undo_ask(
 async def cb_tx_del_ask(
     callback: CallbackQuery,
     callback_data: TxCb,
+    session: AsyncSession,
+    db_user: User,
 ) -> None:
+    if await _owned_charge_or_alert(callback, session, db_user, callback_data.tid) is None:
+        return
     await callback.message.edit_text(
         "🗑 Удалить списание из истории?\n\n"
         "Дата следующего списания подписки не изменится.",
