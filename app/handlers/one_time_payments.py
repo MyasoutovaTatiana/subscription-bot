@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -55,6 +56,9 @@ from app.utils.money import MoneyError, parse_amount, quantize_money
 from app.utils.telegram import escape_html
 
 router = Router(name="one_time_payments")
+logger = logging.getLogger(__name__)
+
+PAYMENT_SAVE_ERROR_MESSAGE = "Не удалось сохранить платёж. Попробуй ещё раз."
 
 
 def _amount_prompt(*, name: str, currency: str) -> str:
@@ -479,6 +483,10 @@ async def ot_confirm(
         return
 
     data = await state.get_data()
+    # Stop a repeated Telegram callback from entering this handler again while
+    # the current save is in progress. On every recoverable failure below the
+    # user is returned to an actionable FSM state.
+    await state.set_state(None)
     friend_ids = list(data.get("selected_friend_ids") or [])
     dto = CreateOneTimePaymentDTO(
         user_id=db_user.id,
@@ -511,30 +519,54 @@ async def ot_confirm(
         await callback.answer(PAYMENT_METHOD_UNAVAILABLE_MESSAGE, show_alert=True)
         return
     except (MoneyError, LookupError, ValueError) as exc:
+        await state.set_state(OneTimePaymentSG.confirm)
         await callback.answer(str(exc), show_alert=True)
+        return
+    except Exception:  # noqa: BLE001
+        await session.rollback()
+        await state.set_state(OneTimePaymentSG.confirm)
+        logger.exception("Failed to create one-time payment for user_id=%s", db_user.id)
+        await callback.answer(PAYMENT_SAVE_ERROR_MESSAGE, show_alert=True)
+        return
+
+    try:
+        debt_blocks: list[str] = []
+        friend_debts = [d for d in (tx.debts or []) if d.friend]
+        if friend_debts:
+            lines = [
+                f"{escape_html(d.friend.name)}\n"
+                f"{money(Decimal(d.amount_rub), CurrencyCode.RUB.value)}"
+                for d in friend_debts
+            ]
+            debt_blocks.append(
+                field(Icon.DEBTS, Copy.DEBTS_CREATED_LABEL, "\n\n".join(lines))
+            )
+            footer = Copy.DEBTS_ADDED_FOOTER
+        else:
+            footer = None
+
+        text = success_screen(
+            Copy.PAYMENT_SAVED,
+            entity_name(Icon.HOTEL, tx.name),
+            *debt_blocks,
+            footer=footer,
+        )
+        await callback.message.edit_text(
+            text,
+            reply_markup=payment_saved_keyboard(
+                transaction_id=tx.id,
+                has_debts=bool(friend_debts),
+            ),
+            parse_mode="HTML",
+        )
+    except Exception:  # noqa: BLE001
+        await session.rollback()
+        await state.set_state(OneTimePaymentSG.confirm)
+        logger.exception("Failed to save or render one-time payment for user_id=%s", db_user.id)
+        await callback.answer(PAYMENT_SAVE_ERROR_MESSAGE, show_alert=True)
         return
 
     await state.clear()
-    debt_blocks: list[str] = []
-    friend_debts = [d for d in (tx.debts or []) if d.friend]
-    if friend_debts:
-        lines = [f"{escape_html(d.friend.name)}\n{money(Decimal(d.amount_rub), CurrencyCode.RUB.value)}" for d in friend_debts]
-        debt_blocks.append(field(Icon.DEBTS, Copy.DEBTS_CREATED_LABEL, "\n\n".join(lines)))
-        footer = Copy.DEBTS_ADDED_FOOTER
-    else:
-        footer = None
-
-    text = success_screen(
-        Copy.PAYMENT_SAVED,
-        entity_name(Icon.HOTEL, tx.name),
-        *debt_blocks,
-        footer=footer,
-    )
-    await callback.message.edit_text(
-        text,
-        reply_markup=payment_saved_keyboard(transaction_id=tx.id, has_debts=bool(friend_debts)),
-        parse_mode="HTML",
-    )
     await callback.answer()
 
 
