@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
+from sqlalchemy import inspect
+
 from app.models.enums import CurrencyCode
 from app.models.subscription import Subscription
 from app.services.billing_dates import billing_label_short
@@ -65,6 +67,22 @@ def _card_heading(raw: str | None) -> str:
     return title(Icon.SUBSCRIPTION, raw)
 
 
+def _loaded_participant_names(sub: Subscription) -> list[str]:
+    sub_state = inspect(sub, raiseerr=False)
+    if sub_state is not None and "participants" in sub_state.unloaded:
+        return []
+
+    names: list[str] = []
+    for participant in getattr(sub, "participants", []) or []:
+        participant_state = inspect(participant, raiseerr=False)
+        if participant_state is not None and "friend" in participant_state.unloaded:
+            continue
+        friend = getattr(participant, "friend", None)
+        if friend is not None:
+            names.append(txt(friend.name))
+    return names
+
+
 def format_subscription_card(
     sub: Subscription,
     *,
@@ -103,6 +121,9 @@ def format_subscription_card(
         payment_method_field(card_name),
         reminders_field(reminders),
     ]
+    friend_names = _loaded_participant_names(sub)
+    if friend_names:
+        fields.append(field(Icon.PEOPLE, "Друзья", bullets(*friend_names)))
     if sub.notes:
         fields.append(note_field(txt(sub.notes)))
 

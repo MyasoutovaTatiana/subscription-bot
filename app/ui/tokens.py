@@ -170,7 +170,7 @@ class Action:
     NEW_FRIEND = "➕ Новый друг"
     DONE = "Готово"
     NO_FRIENDS = "Без друзей"
-    LATER = "Позже"
+    WITH_FRIENDS = "С друзьями"
     YES = "Да"
     NO = "Нет"
     TODAY = f"🟢 {Copy.TODAY}"
