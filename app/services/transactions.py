@@ -102,33 +102,42 @@ class TransactionService:
 
         rub_for_split = actual if actual is not None else estimated
 
-        tx = await self._tx_repo.create(
-            user_id=dto.user_id,
-            subscription_id=None,
-            transaction_type=TransactionType.ONE_TIME.value,
-            name=dto.name.strip(),
-            category=dto.category,
-            original_amount=dto.original_amount,
-            original_currency=dto.original_currency.upper(),
-            exchange_rate=exchange_rate,
-            exchange_rate_date=exchange_rate_date,
-            estimated_rub_amount=estimated,
-            actual_rub_amount=actual,
-            is_rate_estimated=is_rate_estimated,
-            conversion_mode=mode.value,
-            transaction_date=dto.transaction_date,
-            payment_method_id=dto.payment_method_id,
-            split_mode=dto.split_mode,
-            include_owner_in_split=dto.include_owner_in_split,
-            notes=dto.notes,
-        )
+        # Keep the payment, all participant splits and all friend debts inside
+        # one savepoint. This makes the service safe outside Telegram's request
+        # middleware too: a failure halfway through cannot leave partial data.
+        async with self._session.begin_nested():
+            tx = await self._tx_repo.create(
+                user_id=dto.user_id,
+                subscription_id=None,
+                transaction_type=TransactionType.ONE_TIME.value,
+                name=dto.name.strip(),
+                category=dto.category,
+                original_amount=dto.original_amount,
+                original_currency=dto.original_currency.upper(),
+                exchange_rate=exchange_rate,
+                exchange_rate_date=exchange_rate_date,
+                estimated_rub_amount=estimated,
+                actual_rub_amount=actual,
+                is_rate_estimated=is_rate_estimated,
+                conversion_mode=mode.value,
+                transaction_date=dto.transaction_date,
+                payment_method_id=dto.payment_method_id,
+                split_mode=dto.split_mode,
+                include_owner_in_split=dto.include_owner_in_split,
+                notes=dto.notes,
+            )
 
-        if dto.split_mode and (friend_ids or dto.include_owner_in_split):
-            shares = self._build_shares(dto, rub_for_split, friend_ids=friend_ids)
-            await self._persist_shares(tx, shares, dto, is_estimated=actual is None)
+            if dto.split_mode and (friend_ids or dto.include_owner_in_split):
+                shares = self._build_shares(dto, rub_for_split, friend_ids=friend_ids)
+                await self._persist_shares(
+                    tx,
+                    shares,
+                    dto,
+                    is_estimated=actual is None,
+                )
 
-        loaded = await self._tx_repo.get_for_user(tx.id, dto.user_id)
-        assert loaded is not None
+            loaded = await self._tx_repo.get_for_user(tx.id, dto.user_id)
+            assert loaded is not None
         return loaded
 
     def _build_shares(
