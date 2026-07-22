@@ -19,6 +19,16 @@ from app.repositories.subscriptions import SubscriptionRepository
 from app.utils.money import MoneyError, parse_amount
 
 
+SUBSCRIPTION_DATA_UNAVAILABLE_MESSAGE = "Подписка не найдена или недоступна."
+
+
+class SubscriptionDataUnavailableError(LookupError):
+    """A subscription mutation target is outside the current user's scope."""
+
+    def __init__(self) -> None:
+        super().__init__(SUBSCRIPTION_DATA_UNAVAILABLE_MESSAGE)
+
+
 @dataclass(slots=True)
 class CreateSubscriptionDTO:
     user_id: int
@@ -108,22 +118,55 @@ class SubscriptionService:
     async def get(self, subscription_id: int, user_id: int) -> Subscription | None:
         return await self._repo.get_for_user(subscription_id, user_id)
 
-    async def deactivate(self, subscription: Subscription) -> Subscription:
+    async def deactivate(
+        self,
+        subscription: Subscription,
+        *,
+        user_id: int,
+    ) -> Subscription:
+        subscription = await self._validated_owned_subscription(subscription, user_id)
         subscription.is_active = False
         return await self._repo.save(subscription)
 
-    async def activate(self, subscription: Subscription) -> Subscription:
+    async def activate(
+        self,
+        subscription: Subscription,
+        *,
+        user_id: int,
+    ) -> Subscription:
+        subscription = await self._validated_owned_subscription(subscription, user_id)
         subscription.is_active = True
         return await self._repo.save(subscription)
 
-    async def delete(self, subscription: Subscription) -> None:
+    async def delete(self, subscription: Subscription, *, user_id: int) -> None:
+        subscription = await self._validated_owned_subscription(subscription, user_id)
         await self._repo.delete(subscription)
 
-    async def update_fields(self, subscription: Subscription, **fields) -> Subscription:
+    async def update_fields(
+        self,
+        subscription: Subscription,
+        *,
+        user_id: int,
+        **fields,
+    ) -> Subscription:
+        subscription = await self._validated_owned_subscription(subscription, user_id)
         for key, value in fields.items():
             if value is not None or key in fields:
                 setattr(subscription, key, value)
         return await self._repo.save(subscription)
+
+    async def _validated_owned_subscription(
+        self,
+        subscription: Subscription,
+        user_id: int,
+    ) -> Subscription:
+        """Reload a mutation target in the current user's ownership scope."""
+        if subscription.user_id != user_id:
+            raise SubscriptionDataUnavailableError()
+        owned = await self._repo.get_for_user(subscription.id, user_id)
+        if owned is None:
+            raise SubscriptionDataUnavailableError()
+        return owned
 
 
 def validate_amount_text(raw: str) -> Decimal:
