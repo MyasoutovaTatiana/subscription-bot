@@ -6,7 +6,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -63,8 +63,31 @@ class DebtRepository:
                 selectinload(Debt.user),
             )
             .where(Debt.share_token == token)
+            .execution_options(populate_existing=True)
         )
         return result.scalar_one_or_none()
+
+    async def claim_share_token(self, token: str, telegram_user_id: int) -> bool:
+        """Atomically bind an open debt link to its first Telegram user.
+
+        Reopening the link by the already-bound payer is allowed. A different
+        user, a closed debt, or an invalid token cannot change the binding.
+        """
+        statuses = [s.value for s in OPEN_DEBT_STATUSES]
+        result = await self._session.execute(
+            update(Debt)
+            .where(
+                Debt.share_token == token,
+                Debt.status.in_(statuses),
+                or_(
+                    Debt.payer_telegram_id.is_(None),
+                    Debt.payer_telegram_id == telegram_user_id,
+                ),
+            )
+            .values(payer_telegram_id=telegram_user_id)
+        )
+        await self._session.flush()
+        return bool(result.rowcount)
 
     async def ensure_share_token(self, debt: Debt) -> str:
         if not debt.share_token:
