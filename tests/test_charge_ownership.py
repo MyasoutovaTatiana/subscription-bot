@@ -453,13 +453,13 @@ async def test_all_public_rebuild_paths_reject_foreign_participant_before_change
 
     with pytest.raises(ChargeDataUnavailableError):
         if method_name == "update_actual_rub":
-            await service.update_actual_rub(tx, Decimal("130"))
+            await service.update_actual_rub(tx, Decimal("130"), user_id=owner_id)
         elif method_name == "update_charge_date":
-            await service.update_charge_date(tx, date(2026, 7, 20))
+            await service.update_charge_date(tx, date(2026, 7, 20), user_id=owner_id)
         elif method_name == "update_rate":
-            await service.update_rate(tx, Decimal("1.10"))
+            await service.update_rate(tx, Decimal("1.10"), user_id=owner_id)
         else:
-            await service.recalculate_debts(tx)
+            await service.recalculate_debts(tx, user_id=owner_id)
 
     assert _column_snapshot(tx) == tx_before
     assert _column_snapshot(tx.subscription) == subscription_before
@@ -471,6 +471,98 @@ async def test_all_public_rebuild_paths_reject_foreign_participant_before_change
         await _count(session, TransactionSplit),
         await _count(session, Debt),
     ) == counts_before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method_name",
+    [
+        "update_actual_rub",
+        "update_charge_date",
+        "update_rate",
+        "recalculate_debts",
+        "undo_charge",
+        "delete_charge",
+    ],
+)
+async def test_all_public_charge_mutations_reject_foreign_user_before_changes(
+    session: AsyncSession,
+    method_name: str,
+) -> None:
+    owner = await _user(session, 1)
+    other = await _user(session, 2)
+    friend = await _friend(session, owner.id, "Owner friend")
+    subscription = await _subscription(session, owner.id, friend_ids=[friend.id])
+    service = ChargeService(session)
+    created, _next_date, _estimated, _actual = await service.confirm_charged(
+        subscription,
+        user_id=owner.id,
+    )
+    tx_id = created.id
+    owner_id = owner.id
+    other_id = other.id
+    await session.commit()
+    session.expire_all()
+
+    tx = await service.get_for_user(tx_id, owner_id)
+    assert tx is not None
+    assert tx.subscription is not None
+    tx_before = _column_snapshot(tx)
+    subscription_before = _column_snapshot(tx.subscription)
+    counts_before = (
+        await _count(session, Transaction),
+        await _count(session, TransactionSplit),
+        await _count(session, Debt),
+    )
+
+    with pytest.raises(ChargeDataUnavailableError):
+        if method_name == "update_actual_rub":
+            await service.update_actual_rub(tx, Decimal("130"), user_id=other_id)
+        elif method_name == "update_charge_date":
+            await service.update_charge_date(
+                tx,
+                date(2026, 7, 20),
+                user_id=other_id,
+            )
+        elif method_name == "update_rate":
+            await service.update_rate(tx, Decimal("1.10"), user_id=other_id)
+        elif method_name == "recalculate_debts":
+            await service.recalculate_debts(tx, user_id=other_id)
+        elif method_name == "undo_charge":
+            await service.undo_charge(tx, user_id=other_id)
+        else:
+            await service.delete_charge(tx, user_id=other_id)
+
+    assert _column_snapshot(tx) == tx_before
+    assert _column_snapshot(tx.subscription) == subscription_before
+    assert (
+        await _count(session, Transaction),
+        await _count(session, TransactionSplit),
+        await _count(session, Debt),
+    ) == counts_before
+
+
+@pytest.mark.asyncio
+async def test_charge_mutation_reloads_forged_target_in_user_scope(
+    session: AsyncSession,
+) -> None:
+    owner = await _user(session, 1)
+    attacker = await _user(session, 2)
+    subscription = await _subscription(session, owner.id)
+    service = ChargeService(session)
+    created, _next_date, _estimated, _actual = await service.confirm_charged(
+        subscription,
+        user_id=owner.id,
+    )
+    tx_id = created.id
+    await session.commit()
+
+    forged = Transaction(id=tx_id, user_id=attacker.id)
+    with pytest.raises(ChargeDataUnavailableError):
+        await service.delete_charge(forged, user_id=attacker.id)
+
+    assert await service.get_for_user(tx_id, owner.id) is not None
+    assert await _count(session, Transaction) == 1
 
 
 def _period_cb(subscription: Subscription) -> SubPeriodCb:

@@ -1013,14 +1013,13 @@ async def apply_edit(message: Message, state: FSMContext, session: AsyncSession,
     try:
         if field == "actual_rub_after_charge":
             # Совместимость со старыми FSM-сессиями (до ask-first UX).
-            from app.repositories.transactions import TransactionRepository
-
             amount = parse_amount(raw)
             tx_id = int(data.get("tx_id") or 0)
-            tx = await TransactionRepository(session).get_for_user(tx_id, db_user.id)
+            charge_service = ChargeService(session)
+            tx = await charge_service.get_for_user(tx_id, db_user.id)
             if tx is None:
                 raise ValueError("Платёж не найден")
-            await TransactionRepository(session).update_actual_rub(tx, amount)
+            await charge_service.update_actual_rub(tx, amount, user_id=db_user.id)
             await state.clear()
             estimated = None
             try:

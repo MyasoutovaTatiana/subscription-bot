@@ -176,28 +176,28 @@ async def test_update_actual_and_undo(session: AsyncSession) -> None:
     assert len([d for d in tx.debts if d.status == "active"]) == 1
     assert tx.debts[0].amount_rub == Decimal("900.00")  # equal split with owner
 
-    was, now = await service.update_actual_rub(tx, Decimal("2000"))
+    was, now = await service.update_actual_rub(tx, Decimal("2000"), user_id=user_id)
     assert was == Decimal("1800.00")
     assert now == Decimal("2000.00")
     tx = await service.get_for_user(tx.id, user_id)
     assert tx is not None
     assert tx.debts[0].amount_rub == Decimal("1000.00")
 
-    estimated = await service.update_rate(tx, Decimal("95"))
+    estimated = await service.update_rate(tx, Decimal("95"), user_id=user_id)
     assert estimated == Decimal("1900.00")
     # fact set — debts stay on actual
     tx = await service.get_for_user(tx.id, user_id)
     assert tx is not None
     assert tx.actual_rub_amount == Decimal("2000.00")
 
-    await service.update_charge_date(tx, date(2026, 7, 20))
+    await service.update_charge_date(tx, date(2026, 7, 20), user_id=user_id)
     sub = await SubscriptionService(session).get(sub_id, user_id)
     assert sub is not None
     assert sub.next_charge_date == date(2026, 8, 20)
 
     tx = await service.get_for_user(tx.id, user_id)
     assert tx is not None
-    restored = await service.undo_charge(tx)
+    restored = await service.undo_charge(tx, user_id=user_id)
     assert restored is not None
     assert restored.next_charge_date == date(2026, 7, 20)
     assert await service.get_for_user(tx.id, user_id) is None
@@ -216,6 +216,6 @@ async def test_delete_keeps_next_date(session: AsyncSession) -> None:
     assert next_date == date(2026, 8, 14)
     tx = await service.get_for_user(tx.id, user.id)
     assert tx is not None
-    sub2 = await service.delete_charge(tx)
+    sub2 = await service.delete_charge(tx, user_id=user.id)
     assert sub2 is not None
     assert sub2.next_charge_date == date(2026, 8, 14)

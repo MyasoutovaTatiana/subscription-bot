@@ -156,7 +156,7 @@ async def cb_tx_recalc(
     if tx is None:
         await callback.answer("Списание не найдено", show_alert=True)
         return
-    await service.recalculate_debts(tx)
+    await service.recalculate_debts(tx, user_id=db_user.id)
     tx = await service.get_for_user(callback_data.tid, db_user.id)
     await render_charge_card(callback.message, tx, edit=True)
     await callback.answer(Copy.DEBTS_RECALCULATED)
@@ -211,7 +211,7 @@ async def cb_tx_undo_yes(
     if tx is None:
         await callback.answer("Списание не найдено", show_alert=True)
         return
-    sub = await service.undo_charge(tx)
+    sub = await service.undo_charge(tx, user_id=db_user.id)
     if sub is None:
         await callback.message.edit_text(f"✅ {Copy.CHARGE_UNDONE}")
         await callback.answer()
@@ -253,7 +253,7 @@ async def cb_tx_del_yes(
     if tx is None:
         await callback.answer("Списание не найдено", show_alert=True)
         return
-    sub = await service.delete_charge(tx)
+    sub = await service.delete_charge(tx, user_id=db_user.id)
     if sub is None:
         await callback.message.edit_text(f"✅ {Copy.CHARGE_DELETED}")
         await callback.answer()
@@ -304,7 +304,7 @@ async def edit_charge_amount(
         return
     try:
         amount = parse_amount(message.text or "")
-        was, now = await service.update_actual_rub(tx, amount)
+        was, now = await service.update_actual_rub(tx, amount, user_id=db_user.id)
     except (MoneyError, ValueError) as exc:
         await message.answer(str(exc))
         return
@@ -332,7 +332,7 @@ async def edit_charge_date(
         return
     try:
         new_date = parse_user_date((message.text or "").strip())
-        await service.update_charge_date(tx, new_date)
+        await service.update_charge_date(tx, new_date, user_id=db_user.id)
     except ChargeDateConflictError as exc:
         await message.answer(str(exc))
         return
@@ -363,7 +363,7 @@ async def edit_charge_rate(
         return
     try:
         rate = parse_amount(message.text or "")
-        estimated = await service.update_rate(tx, rate)
+        estimated = await service.update_rate(tx, rate, user_id=db_user.id)
     except (MoneyError, ValueError) as exc:
         await message.answer(human_error(str(exc)))
         return
