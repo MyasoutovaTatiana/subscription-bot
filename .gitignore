@@ -19,12 +19,24 @@ htmlcov/
 
 # Environment & secrets
 .env
+.env.*
+!.env.example
 *.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
 
 # Database
 *.db
+*.db-*
 *.sqlite
+*.sqlite-*
 *.sqlite3
+*.sqlite3-*
+*.backup
+*.dump
 
 # IDE / OS
 .idea/
