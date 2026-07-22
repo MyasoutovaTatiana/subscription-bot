@@ -34,9 +34,19 @@
 - Команды и reply-меню всегда важнее FSM
 - Редактируемая карточка списания (handlers/charges) сохранена для правок истории
 
-### Тесты (локально: **57 passed**)
+### Тесты (локально: **147 passed**, 2026-07-22)
 
 - money, billing dates, currency, debt calculator, reminders, subscription smoke, config, UI, charge confirm UX, debt statuses, ChargeService, FSM navigation
+- Идемпотентность списаний: последовательные и параллельные callback, уникальный индекс и rollback без частичных Transaction / splits / debts
+- Календарные edge cases: 29/30/31-е, високосный февраль, ежегодный и пользовательский интервалы
+
+### Production-проверка идемпотентности
+
+- Alembic revision `b2c3d4e5f6a7` применена 2026-07-21
+- Индекс `uq_transactions_subscription_id_transaction_date` создан
+- Дубликаты перед миграцией отсутствовали, SQLite integrity check: `ok`
+- Smoke-test Telegram 2026-07-22: `/start` и «Все активные» работают
+- Модель, pre-check и rollback: `docs/CHARGE_IDEMPOTENCY.md`
 
 ## Реализовано частично
 
