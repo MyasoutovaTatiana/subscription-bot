@@ -172,7 +172,9 @@ async def cb_money_ok(
     if debt is None:
         await callback.answer("Не найдено", show_alert=True)
         return
-    await repo.mark_paid(debt)
+    if not await repo.mark_paid(debt):
+        await callback.answer("Статус долга уже изменён", show_alert=True)
+        return
     owner_name = _owner_first_name(db_user)
     if debt.payer_telegram_id:
         try:
@@ -203,7 +205,9 @@ async def cb_money_no(
     if debt is None:
         await callback.answer("Не найдено", show_alert=True)
         return
-    await repo.reopen_awaiting(debt)
+    if not await repo.reopen_awaiting(debt):
+        await callback.answer("Статус долга уже изменён", show_alert=True)
+        return
     owner_name = _owner_first_name(db_user)
     if debt.payer_telegram_id:
         try:
@@ -240,7 +244,9 @@ async def cb_check_later(
     if debt.status != DebtStatus.NEEDS_REVIEW.value:
         await callback.answer("Сначала дождись сообщения друга", show_alert=True)
         return
-    await repo.schedule_review_reminder(debt, hours=24)
+    if not await repo.schedule_review_reminder(debt, hours=24):
+        await callback.answer("Статус долга уже изменён", show_alert=True)
+        return
     await callback.message.edit_text(
         success_screen(Copy.REMIND_LATER_SET),
         reply_markup=debt_owner_keyboard(debt),
@@ -261,7 +267,9 @@ async def cb_cancel(
     if debt is None:
         await callback.answer("Не найдено", show_alert=True)
         return
-    await repo.cancel(debt)
+    if not await repo.cancel(debt):
+        await callback.answer("Статус долга уже изменён", show_alert=True)
+        return
     await callback.answer("Отменён")
     await _render_debts(callback.message, session, db_user, edit=True)
 
@@ -303,7 +311,12 @@ async def edit_debt_amount(
     if debt is None:
         await message.answer("Долг не найден.", reply_markup=main_menu_keyboard())
         return
-    await repo.update_amount(debt, amount)
+    if not await repo.update_amount(debt, amount):
+        await message.answer(
+            "Долг уже закрыт или отменён.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
     await message.answer(
         success_screen(Copy.AMOUNT_UPDATED, money(amount, "RUB")),
         reply_markup=main_menu_keyboard(),
@@ -439,7 +452,23 @@ async def cb_friend_paid(
         await callback.answer("Нет доступа", show_alert=True)
         return
 
-    await repo.mark_payment_reported(debt)
+    if not await repo.mark_payment_reported(
+        debt,
+        payer_telegram_id=db_user.telegram_user_id,
+    ):
+        refreshed = await repo.get_by_id(callback_data.did)
+        if refreshed is not None and refreshed.status == DebtStatus.NEEDS_REVIEW.value:
+            await callback.answer(
+                "Информация уже отправлена",
+                show_alert=True,
+            )
+        elif refreshed is not None and refreshed.status == DebtStatus.PAID.value:
+            await callback.answer("Долг уже закрыт", show_alert=True)
+        elif refreshed is not None and refreshed.status == DebtStatus.CANCELLED.value:
+            await callback.answer("Долг отменён", show_alert=True)
+        else:
+            await callback.answer("Нет доступа", show_alert=True)
+        return
     owner = debt.user
     owner_name = _owner_first_name(owner)
     friend_name = debt.friend.name if debt.friend else db_user.first_name or "Друг"

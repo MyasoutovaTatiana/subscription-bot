@@ -51,6 +51,7 @@ class DebtRepository:
                 selectinload(Debt.user),
             )
             .where(Debt.id == debt_id)
+            .execution_options(populate_existing=True)
         )
         return result.scalar_one_or_none()
 
@@ -122,32 +123,81 @@ class DebtRepository:
     async def total_active_rub(self, user_id: int) -> Decimal:
         return await self.total_open_rub(user_id)
 
-    async def mark_paid(self, debt: Debt) -> Debt:
-        debt.status = DebtStatus.PAID.value
-        debt.paid_at = datetime.now(timezone.utc)
-        debt.review_remind_at = None
+    async def mark_paid(self, debt: Debt) -> bool:
+        """Atomically close an open debt; stale buttons cannot revive/overwrite it."""
+        result = await self._session.execute(
+            update(Debt)
+            .where(
+                Debt.id == debt.id,
+                Debt.user_id == debt.user_id,
+                Debt.status.in_(
+                    [
+                        DebtStatus.ACTIVE.value,
+                        DebtStatus.NEEDS_REVIEW.value,
+                    ]
+                ),
+            )
+            .values(
+                status=DebtStatus.PAID.value,
+                paid_at=datetime.now(timezone.utc),
+                review_remind_at=None,
+            )
+        )
         await self._session.flush()
-        return debt
+        return bool(result.rowcount)
 
-    async def mark_payment_reported(self, debt: Debt) -> Debt:
-        """Move ACTIVE debt to NEEDS_REVIEW. Does not bind payer_telegram_id."""
-        debt.status = DebtStatus.NEEDS_REVIEW.value
-        debt.payment_reported_at = datetime.now(timezone.utc)
-        debt.review_remind_at = None
+    async def mark_payment_reported(
+        self,
+        debt: Debt,
+        *,
+        payer_telegram_id: int,
+    ) -> bool:
+        """Atomically accept the first report from the bound payer."""
+        result = await self._session.execute(
+            update(Debt)
+            .where(
+                Debt.id == debt.id,
+                Debt.status == DebtStatus.ACTIVE.value,
+                Debt.payer_telegram_id == payer_telegram_id,
+            )
+            .values(
+                status=DebtStatus.NEEDS_REVIEW.value,
+                payment_reported_at=datetime.now(timezone.utc),
+                review_remind_at=None,
+            )
+        )
         await self._session.flush()
-        return debt
+        return bool(result.rowcount)
 
-    async def reopen_awaiting(self, debt: Debt) -> Debt:
-        debt.status = DebtStatus.ACTIVE.value
-        debt.payment_reported_at = None
-        debt.review_remind_at = None
+    async def reopen_awaiting(self, debt: Debt) -> bool:
+        result = await self._session.execute(
+            update(Debt)
+            .where(
+                Debt.id == debt.id,
+                Debt.user_id == debt.user_id,
+                Debt.status == DebtStatus.NEEDS_REVIEW.value,
+            )
+            .values(
+                status=DebtStatus.ACTIVE.value,
+                payment_reported_at=None,
+                review_remind_at=None,
+            )
+        )
         await self._session.flush()
-        return debt
+        return bool(result.rowcount)
 
-    async def schedule_review_reminder(self, debt: Debt, *, hours: int = 24) -> Debt:
-        debt.review_remind_at = datetime.now(timezone.utc) + timedelta(hours=hours)
+    async def schedule_review_reminder(self, debt: Debt, *, hours: int = 24) -> bool:
+        result = await self._session.execute(
+            update(Debt)
+            .where(
+                Debt.id == debt.id,
+                Debt.user_id == debt.user_id,
+                Debt.status == DebtStatus.NEEDS_REVIEW.value,
+            )
+            .values(review_remind_at=datetime.now(timezone.utc) + timedelta(hours=hours))
+        )
         await self._session.flush()
-        return debt
+        return bool(result.rowcount)
 
     async def list_due_review_reminders(self, *, now: datetime | None = None) -> list[Debt]:
         moment = now or datetime.now(timezone.utc)
@@ -192,16 +242,31 @@ class DebtRepository:
             if d.payment_reported_at is not None and d.payment_reported_at <= older_than
         ]
 
-    async def cancel(self, debt: Debt) -> Debt:
-        debt.status = DebtStatus.CANCELLED.value
-        debt.review_remind_at = None
+    async def cancel(self, debt: Debt) -> bool:
+        result = await self._session.execute(
+            update(Debt)
+            .where(
+                Debt.id == debt.id,
+                Debt.user_id == debt.user_id,
+                Debt.status == DebtStatus.ACTIVE.value,
+            )
+            .values(status=DebtStatus.CANCELLED.value, review_remind_at=None)
+        )
         await self._session.flush()
-        return debt
+        return bool(result.rowcount)
 
-    async def update_amount(self, debt: Debt, amount: Decimal) -> Debt:
-        debt.amount_rub = amount
+    async def update_amount(self, debt: Debt, amount: Decimal) -> bool:
+        result = await self._session.execute(
+            update(Debt)
+            .where(
+                Debt.id == debt.id,
+                Debt.user_id == debt.user_id,
+                Debt.status == DebtStatus.ACTIVE.value,
+            )
+            .values(amount_rub=amount)
+        )
         await self._session.flush()
-        return debt
+        return bool(result.rowcount)
 
     async def delete_open_for_transaction(self, transaction_id: int) -> int:
         statuses = [s.value for s in OPEN_DEBT_STATUSES]
