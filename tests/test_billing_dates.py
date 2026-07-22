@@ -2,6 +2,8 @@
 
 from datetime import date
 
+import pytest
+
 from app.models.enums import BillingType
 from app.services.billing_dates import calculate_next_charge_date
 
@@ -49,3 +51,47 @@ def test_none_returns_null() -> None:
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    ("billing_day", "january", "february", "march"),
+    [
+        (29, date(2024, 1, 29), date(2024, 2, 29), date(2024, 3, 29)),
+        (30, date(2024, 1, 30), date(2024, 2, 29), date(2024, 3, 30)),
+        (31, date(2024, 1, 31), date(2024, 2, 29), date(2024, 3, 31)),
+    ],
+)
+def test_monthly_anchor_returns_after_leap_february(
+    billing_day: int,
+    january: date,
+    february: date,
+    march: date,
+) -> None:
+    after_january = calculate_next_charge_date(
+        billing_type=BillingType.MONTHLY,
+        current_charge_date=january,
+        billing_day=billing_day,
+    )
+    after_february = calculate_next_charge_date(
+        billing_type=BillingType.MONTHLY,
+        current_charge_date=february,
+        billing_day=billing_day,
+    )
+
+    assert after_january == february
+    assert after_february == march
+
+
+def test_yearly_regular_date() -> None:
+    assert calculate_next_charge_date(
+        billing_type=BillingType.YEARLY,
+        current_charge_date=date(2026, 7, 22),
+    ) == date(2027, 7, 22)
+
+
+def test_custom_interval() -> None:
+    assert calculate_next_charge_date(
+        billing_type=BillingType.CUSTOM,
+        current_charge_date=date(2026, 7, 22),
+        billing_interval=45,
+    ) == date(2026, 9, 5)

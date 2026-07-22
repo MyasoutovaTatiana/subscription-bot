@@ -460,3 +460,83 @@ async def test_unique_index_rejects_duplicate_insert(session: AsyncSession) -> N
     with pytest.raises(IntegrityError):
         await repo.create(**kwargs)
     await session.rollback()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_point", ["split", "debt", "subscription"])
+async def test_confirm_failure_rolls_back_all_charge_entities(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_point: str,
+) -> None:
+    owner = await _user(session)
+    friend = await _friend(session, owner.id)
+    sub = await _subscription(session, owner.id, friend_ids=[friend.id])
+    user_id = owner.id
+    sub_id = sub.id
+    service = ChargeService(session)
+
+    if failure_point == "split":
+        monkeypatch.setattr(
+            service._tx,
+            "add_split",
+            AsyncMock(side_effect=RuntimeError("forced split failure")),
+        )
+    elif failure_point == "debt":
+        monkeypatch.setattr(
+            service._debts,
+            "create",
+            AsyncMock(side_effect=RuntimeError("forced debt failure")),
+        )
+    else:
+        monkeypatch.setattr(
+            service._subs,
+            "save",
+            AsyncMock(side_effect=RuntimeError("forced subscription failure")),
+        )
+
+    with pytest.raises(RuntimeError, match="forced"):
+        await service.confirm_charged(sub, user_id=user_id, period_date=PERIOD)
+
+    assert await _count(session, Transaction) == 0
+    assert await _count(session, TransactionSplit) == 0
+    assert await _count(session, Debt) == 0
+    reloaded = await SubscriptionService(session).get(sub_id, user_id)
+    assert reloaded is not None
+    assert reloaded.next_charge_date == PERIOD
+
+
+@pytest.mark.asyncio
+async def test_confirm_can_retry_after_rolled_back_failure(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner = await _user(session)
+    friend = await _friend(session, owner.id)
+    sub = await _subscription(session, owner.id, friend_ids=[friend.id])
+    user_id = owner.id
+    sub_id = sub.id
+    service = ChargeService(session)
+    original_create = service._debts.create
+    monkeypatch.setattr(
+        service._debts,
+        "create",
+        AsyncMock(side_effect=RuntimeError("forced debt failure")),
+    )
+
+    with pytest.raises(RuntimeError, match="forced debt failure"):
+        await service.confirm_charged(sub, user_id=user_id, period_date=PERIOD)
+
+    monkeypatch.setattr(service._debts, "create", original_create)
+    sub = await SubscriptionService(session).get(sub_id, user_id)
+    assert sub is not None
+    result = await service.confirm_charged(sub, user_id=user_id, period_date=PERIOD)
+    await session.commit()
+
+    assert result.already_confirmed is False
+    assert await _count(session, Transaction) == 1
+    assert await _count(session, TransactionSplit) == 2
+    assert await _count(session, Debt) == 1
+    sub = await SubscriptionService(session).get(sub_id, user_id)
+    assert sub is not None
+    assert sub.next_charge_date == date(2026, 8, 14)

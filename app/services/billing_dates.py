@@ -37,12 +37,18 @@ def next_monthly_date(from_date: date, billing_day: int) -> date:
     """
     if not (1 <= billing_day <= 31):
         raise ValueError("billing_day must be 1..31")
-    # Interpret charge on billing_day of current month relative to from_date month
-    last = calendar.monthrange(from_date.year, from_date.month)[1]
-    day = min(billing_day, last)
-    current = date(from_date.year, from_date.month, day)
-    # If caller already charged on from_date, move one month ahead from that anchor
-    return add_months(current, 1)
+    # Calculate the target month first, then clamp the original billing-day anchor.
+    # Clamping the current month before adding a month would make a subscription on
+    # the 31st stick to the 28th after February instead of returning to the 31st.
+    target_month = from_date.month
+    target_year = from_date.year
+    if target_month == 12:
+        target_month = 1
+        target_year += 1
+    else:
+        target_month += 1
+    last_day = calendar.monthrange(target_year, target_month)[1]
+    return date(target_year, target_month, min(billing_day, last_day))
 
 
 def calculate_next_charge_date(
