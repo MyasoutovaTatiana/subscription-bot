@@ -122,10 +122,14 @@ async def process_reminders_job(
                     reply_markup=reminder_actions_keyboard(sub.id, item.charge_date),
                     parse_mode="HTML",
                 )
-                await reminder_repo.mark_sent(created, datetime.now(timezone.utc))
+                await reminder_repo.mark_sent(
+                    created,
+                    datetime.now(timezone.utc),
+                    user_id=user.id,
+                )
             except TelegramAPIError as exc:
                 logger.exception("Failed to send reminder %s", item.unique_key)
-                await reminder_repo.mark_failed(created, str(exc))
+                await reminder_repo.mark_failed(created, str(exc), user_id=user.id)
 
         await session.commit()
 
