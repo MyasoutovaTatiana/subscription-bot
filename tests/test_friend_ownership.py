@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import gc
 from datetime import date
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.handlers.one_time_payments import ot_confirm, ot_friends_toggle
+from app.handlers.one_time_payments import (
+    PAYMENT_SAVE_ERROR_MESSAGE,
+    ot_confirm,
+    ot_friends_toggle,
+)
 from app.handlers.subscriptions import confirm_create
 from app.models import Base
 from app.models.debt import Debt
@@ -416,3 +421,95 @@ async def test_ot_confirm_rejects_foreign_friend_and_returns_to_friends(
     state.set_state.assert_awaited_with(OneTimePaymentSG.friends)
     assert callback.message.edit_text.await_args.args[0] == FRIENDS_UNAVAILABLE_MESSAGE
     assert callback.message.edit_text.await_args.kwargs["reply_markup"] is not None
+
+
+@pytest.mark.asyncio
+async def test_ot_confirm_with_friends_saves_and_renders_success(
+    session: AsyncSession,
+) -> None:
+    """Regression for #19: rendering debts must not trigger async lazy loading."""
+    owner = await _user(session, 1)
+    friends = [
+        await _friend(session, owner.id, name)
+        for name in ("Катя", "Миша", "Лена", "Олег")
+    ]
+    friend_ids = [friend.id for friend in friends]
+    friend_names = [friend.name for friend in friends]
+    # A production callback starts in a new update/session and only has FSM IDs.
+    # Drop test-owned ORM references so Debt.friend cannot be satisfied from the
+    # weak identity map by accident.
+    del friends
+    gc.collect()
+    state = AsyncMock()
+    state.get_data = AsyncMock(
+        return_value={
+            "name": "тест",
+            "amount": "1000",
+            "currency": CurrencyCode.RUB.value,
+            "payment_date": "2026-07-22",
+            "payment_method_id": None,
+            "selected_friend_ids": friend_ids,
+            "include_owner": True,
+            "split_mode": SplitMode.EQUAL.value,
+        }
+    )
+    callback = _callback()
+
+    await ot_confirm(
+        callback,
+        MenuCb(action="pay_confirm", value="yes"),
+        state,
+        session,
+        owner,
+    )
+
+    assert await _count(session, Transaction) == 1
+    assert await _count(session, TransactionSplit) == 5
+    assert await _count(session, Debt) == 4
+    state.clear.assert_awaited_once()
+    callback.message.edit_text.assert_awaited_once()
+    success_text = callback.message.edit_text.await_args.args[0]
+    assert "Платёж сохранён" in success_text
+    assert all(name in success_text for name in friend_names)
+    callback.answer.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_ot_confirm_reports_unexpected_save_error_and_allows_retry(
+    session: AsyncSession,
+) -> None:
+    owner = await _user(session, 1)
+    state = AsyncMock()
+    state.get_data = AsyncMock(
+        return_value={
+            "name": "тест",
+            "amount": "1000",
+            "currency": CurrencyCode.RUB.value,
+            "payment_date": "2026-07-22",
+            "payment_method_id": None,
+            "selected_friend_ids": [],
+            "include_owner": True,
+            "split_mode": None,
+        }
+    )
+    callback = _callback()
+
+    with patch(
+        "app.handlers.one_time_payments.TransactionService.create_one_time",
+        new=AsyncMock(side_effect=RuntimeError("database unavailable")),
+    ):
+        await ot_confirm(
+            callback,
+            MenuCb(action="pay_confirm", value="yes"),
+            state,
+            session,
+            owner,
+        )
+
+    state.set_state.assert_has_awaits([call(None), call(OneTimePaymentSG.confirm)])
+    state.clear.assert_not_awaited()
+    callback.message.edit_text.assert_not_awaited()
+    callback.answer.assert_awaited_once_with(
+        PAYMENT_SAVE_ERROR_MESSAGE,
+        show_alert=True,
+    )

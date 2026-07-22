@@ -9,6 +9,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.models.debt import Debt
 from app.models.subscription import Subscription, SubscriptionParticipant
 from app.models.transaction import Transaction, TransactionSplit
 
@@ -34,7 +35,7 @@ class TransactionRepository:
             select(Transaction)
             .options(
                 selectinload(Transaction.splits),
-                selectinload(Transaction.debts),
+                selectinload(Transaction.debts).selectinload(Debt.friend),
                 selectinload(Transaction.payment_method),
                 selectinload(Transaction.subscription).selectinload(Subscription.participants).selectinload(
                     SubscriptionParticipant.friend
