@@ -181,7 +181,7 @@ async def test_create_subscription_rejects_inactive_payment_method(
 ) -> None:
     owner = await _user(session, telegram_user_id=1, username="owner")
     method = await _pm(session, owner.id, name="Старая")
-    await PaymentMethodRepository(session).deactivate(method)
+    await PaymentMethodRepository(session).deactivate(method, user_id=owner.id)
 
     with pytest.raises(PaymentMethodUnavailableError):
         await SubscriptionService(session).create(_sub_dto(owner.id, method.id))
@@ -322,7 +322,7 @@ async def test_one_time_pm_callback_rejects_inactive_id_before_fsm_write(
 ) -> None:
     owner = await _user(session, telegram_user_id=1, username="owner")
     inactive = await _pm(session, owner.id)
-    await PaymentMethodRepository(session).deactivate(inactive)
+    await PaymentMethodRepository(session).deactivate(inactive, user_id=owner.id)
     state = AsyncMock()
     callback = _confirm_callback()
 

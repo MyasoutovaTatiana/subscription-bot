@@ -71,6 +71,17 @@ class PaymentMethodRepository:
         await self._session.flush()
         return method
 
-    async def deactivate(self, method: PaymentMethod) -> None:
-        method.is_active = False
+    async def deactivate(
+        self,
+        method: PaymentMethod,
+        *,
+        user_id: int,
+    ) -> PaymentMethod:
+        if method.user_id != user_id:
+            raise PaymentMethodUnavailableError
+        owned = await self.get_for_user(method.id, user_id)
+        if owned is None:
+            raise PaymentMethodUnavailableError
+        owned.is_active = False
         await self._session.flush()
+        return owned
