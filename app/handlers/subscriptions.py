@@ -87,6 +87,19 @@ def _parse_callback_period(period: str) -> date | None:
         return None
 
 
+async def _owned_subscription_or_alert(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    db_user: User,
+    subscription_id: int,
+):
+    """Resolve callback IDs in the owner's scope before changing UI/FSM state."""
+    sub = await SubscriptionService(session).get(subscription_id, db_user.id)
+    if sub is None:
+        await callback.answer("Подписка не найдена", show_alert=True)
+    return sub
+
+
 # ── entry points ────────────────────────────────────────────────────────────
 
 
@@ -536,7 +549,14 @@ async def cb_on(callback: CallbackQuery, callback_data: SubCb, session: AsyncSes
 
 
 @router.callback_query(SubCb.filter(F.action == "del"))
-async def cb_delete_ask(callback: CallbackQuery, callback_data: SubCb) -> None:
+async def cb_delete_ask(
+    callback: CallbackQuery,
+    callback_data: SubCb,
+    session: AsyncSession,
+    db_user: User,
+) -> None:
+    if await _owned_subscription_or_alert(callback, session, db_user, callback_data.sid) is None:
+        return
     await callback.message.edit_text(
         "🗑 <b>Удалить подписку?</b>\n\nЭто нельзя отменить.",
         reply_markup=confirm_delete_keyboard(callback_data.sid),
@@ -567,7 +587,11 @@ async def cb_edit_field(
     callback: CallbackQuery,
     callback_data: SubCb,
     state: FSMContext,
+    session: AsyncSession,
+    db_user: User,
 ) -> None:
+    if await _owned_subscription_or_alert(callback, session, db_user, callback_data.sid) is None:
+        return
     field = callback_data.action.removeprefix("ef_")
     await state.set_state(EditSubscriptionSG.value)
     await state.update_data(edit_sid=callback_data.sid, edit_field=field)
@@ -583,7 +607,14 @@ async def cb_edit_field(
 
 
 @router.callback_query(SubCb.filter(F.action == "edit"))
-async def cb_edit_menu(callback: CallbackQuery, callback_data: SubCb) -> None:
+async def cb_edit_menu(
+    callback: CallbackQuery,
+    callback_data: SubCb,
+    session: AsyncSession,
+    db_user: User,
+) -> None:
+    if await _owned_subscription_or_alert(callback, session, db_user, callback_data.sid) is None:
+        return
     await callback.message.edit_text(
         "✏️ <b>Что изменить?</b>",
         reply_markup=edit_fields_keyboard(callback_data.sid),
@@ -844,7 +875,11 @@ async def cb_prob_new_date(
     callback: CallbackQuery,
     callback_data: SubCb,
     state: FSMContext,
+    session: AsyncSession,
+    db_user: User,
 ) -> None:
+    if await _owned_subscription_or_alert(callback, session, db_user, callback_data.sid) is None:
+        return
     await state.set_state(EditSubscriptionSG.value)
     await state.update_data(edit_sid=callback_data.sid, edit_field="next_charge_date")
     reason = "Не хватило денег" if callback_data.action == "prob_nomoney" else "Дата изменилась"
@@ -860,7 +895,15 @@ async def cb_prob_new_date(
 
 
 @router.callback_query(SubCb.filter(F.action == "prob_price"))
-async def cb_prob_price(callback: CallbackQuery, callback_data: SubCb, state: FSMContext) -> None:
+async def cb_prob_price(
+    callback: CallbackQuery,
+    callback_data: SubCb,
+    state: FSMContext,
+    session: AsyncSession,
+    db_user: User,
+) -> None:
+    if await _owned_subscription_or_alert(callback, session, db_user, callback_data.sid) is None:
+        return
     await state.set_state(EditSubscriptionSG.value)
     await state.update_data(edit_sid=callback_data.sid, edit_field="amount")
     await callback.message.edit_text(
@@ -892,7 +935,14 @@ async def cb_prob_cancel(
 
 
 @router.callback_query(SubCb.filter(F.action == "prob_del"))
-async def cb_prob_del(callback: CallbackQuery, callback_data: SubCb) -> None:
+async def cb_prob_del(
+    callback: CallbackQuery,
+    callback_data: SubCb,
+    session: AsyncSession,
+    db_user: User,
+) -> None:
+    if await _owned_subscription_or_alert(callback, session, db_user, callback_data.sid) is None:
+        return
     await callback.message.edit_text(
         screen(title(Icon.TRASH, "Удалить подписку?"), "Это действие нельзя отменить."),
         reply_markup=confirm_delete_keyboard(callback_data.sid),
@@ -902,7 +952,15 @@ async def cb_prob_del(callback: CallbackQuery, callback_data: SubCb) -> None:
 
 
 @router.callback_query(SubCb.filter(F.action == "chg_amt"))
-async def cb_chg_amt(callback: CallbackQuery, callback_data: SubCb, state: FSMContext) -> None:
+async def cb_chg_amt(
+    callback: CallbackQuery,
+    callback_data: SubCb,
+    state: FSMContext,
+    session: AsyncSession,
+    db_user: User,
+) -> None:
+    if await _owned_subscription_or_alert(callback, session, db_user, callback_data.sid) is None:
+        return
     await state.set_state(EditSubscriptionSG.value)
     await state.update_data(edit_sid=callback_data.sid, edit_field="amount")
     await callback.message.answer("Новая сумма подписки:")
@@ -910,7 +968,15 @@ async def cb_chg_amt(callback: CallbackQuery, callback_data: SubCb, state: FSMCo
 
 
 @router.callback_query(SubCb.filter(F.action == "chg_date"))
-async def cb_chg_date(callback: CallbackQuery, callback_data: SubCb, state: FSMContext) -> None:
+async def cb_chg_date(
+    callback: CallbackQuery,
+    callback_data: SubCb,
+    state: FSMContext,
+    session: AsyncSession,
+    db_user: User,
+) -> None:
+    if await _owned_subscription_or_alert(callback, session, db_user, callback_data.sid) is None:
+        return
     await state.set_state(EditSubscriptionSG.value)
     await state.update_data(edit_sid=callback_data.sid, edit_field="next_charge_date")
     await callback.message.answer("Новая дата списания\nНапример: 20.07.2026")
