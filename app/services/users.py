@@ -41,12 +41,13 @@ class UserService:
 
         await self._repo.update_profile(
             user,
+            user_id=user.id,
             telegram_chat_id=telegram_chat_id,
             username=username,
             first_name=first_name,
         )
         return user, False
 
-    async def wipe_user(self, user: User) -> None:
+    async def wipe_user(self, user: User, *, user_id: int) -> None:
         """Remove the user and all data they own (single transaction, no commit)."""
-        await self._repo.wipe_user(user)
+        await self._repo.wipe_user(user, user_id=user_id)

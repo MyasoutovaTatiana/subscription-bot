@@ -219,6 +219,6 @@ async def wipe_data(message: Message, state: FSMContext, session: AsyncSession, 
         await message.answer("Удаление отменено.", reply_markup=main_menu_keyboard())
         return
 
-    await UserService(session).wipe_user(db_user)
+    await UserService(session).wipe_user(db_user, user_id=db_user.id)
     await state.clear()
     await message.answer("✅ Все данные удалены.", reply_markup=main_menu_keyboard())

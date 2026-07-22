@@ -156,7 +156,7 @@ async def test_wipe_removes_user_and_all_owned_data(session: AsyncSession) -> No
     await session.commit()
     user_id = user.id
 
-    await UserService(session).wipe_user(user)
+    await UserService(session).wipe_user(user, user_id=user.id)
     await session.commit()
 
     assert await session.get(User, user_id) is None
@@ -171,7 +171,7 @@ async def test_wipe_a_keeps_b_intact(session: AsyncSession) -> None:
     await session.commit()
     bob_id = bob.id
 
-    await UserService(session).wipe_user(alice)
+    await UserService(session).wipe_user(alice, user_id=alice.id)
     await session.commit()
 
     assert await session.get(User, bob_id) is not None
@@ -194,7 +194,7 @@ async def test_wipe_clears_payer_telegram_id_on_other_user_debt(session: AsyncSe
     debt_id = bob_debt.id
     await session.commit()
 
-    await UserService(session).wipe_user(alice)
+    await UserService(session).wipe_user(alice, user_id=alice.id)
     await session.commit()
 
     refreshed = await session.get(Debt, debt_id)
@@ -225,7 +225,7 @@ async def test_wipe_leaves_no_orphans(session: AsyncSession) -> None:
     assert alice_tx_ids
     assert alice_sub_ids
 
-    await UserService(session).wipe_user(alice)
+    await UserService(session).wipe_user(alice, user_id=alice.id)
     await session.commit()
 
     remaining_splits = (await session.execute(select(TransactionSplit))).scalars().all()
@@ -254,7 +254,7 @@ async def test_get_or_create_after_wipe_creates_fresh_user(session: AsyncSession
     await session.commit()
     old_id = alice.id
 
-    await UserService(session).wipe_user(alice)
+    await UserService(session).wipe_user(alice, user_id=alice.id)
     await session.commit()
 
     service = UserService(session)
@@ -286,7 +286,7 @@ async def test_wipe_empty_user(session: AsyncSession) -> None:
     await session.commit()
     user_id = user.id
 
-    await UserService(session).wipe_user(user)
+    await UserService(session).wipe_user(user, user_id=user.id)
     await session.commit()
 
     assert await session.get(User, user_id) is None
@@ -381,7 +381,7 @@ async def test_wipe_rolls_back_on_midway_error(
     monkeypatch.setattr(session, "execute", flaky_execute)
 
     with pytest.raises(RuntimeError):
-        await UserRepository(session).wipe_user(alice)
+        await UserRepository(session).wipe_user(alice, user_id=alice.id)
 
     monkeypatch.undo()
     await session.rollback()
@@ -423,7 +423,7 @@ async def test_wipe_nulls_legacy_payment_method_on_b(session: AsyncSession) -> N
     alice_pm_id = alice_pm.id
     await session.commit()
 
-    await UserService(session).wipe_user(alice)
+    await UserService(session).wipe_user(alice, user_id=alice.id)
     await session.commit()
 
     refreshed_sub = await session.get(Subscription, bob_sub_id)
@@ -456,7 +456,7 @@ async def test_wipe_removes_legacy_participant_on_b_sub(session: AsyncSession) -
     bad_id = bad.id
     await session.commit()
 
-    await UserService(session).wipe_user(alice)
+    await UserService(session).wipe_user(alice, user_id=alice.id)
     await session.commit()
 
     assert await session.get(Subscription, bob_sub_id) is not None
@@ -500,7 +500,7 @@ async def test_wipe_legacy_friend_on_b_split_and_debt(session: AsyncSession) -> 
     debt_id = bob_debt.id
     await session.commit()
 
-    await UserService(session).wipe_user(alice)
+    await UserService(session).wipe_user(alice, user_id=alice.id)
     await session.commit()
 
     assert await session.get(Transaction, bob_tx_id) is not None
@@ -542,7 +542,7 @@ async def test_wipe_leaves_no_fk_to_deleted_friend_or_pm(session: AsyncSession) 
     bob_debt.friend_id = alice_friend.id
     await session.commit()
 
-    await UserService(session).wipe_user(alice)
+    await UserService(session).wipe_user(alice, user_id=alice.id)
     await session.commit()
 
     assert await _count(session, Subscription, payment_method_id=alice_pm_id) == 0
@@ -606,7 +606,7 @@ async def test_wipe_plain_b_without_cross_refs_unchanged(session: AsyncSession) 
         "tx_pm": bob_tx.payment_method_id,
     }
 
-    await UserService(session).wipe_user(alice)
+    await UserService(session).wipe_user(alice, user_id=alice.id)
     await session.commit()
 
     assert await session.get(User, bob_id) is not None

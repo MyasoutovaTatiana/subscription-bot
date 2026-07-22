@@ -15,6 +15,10 @@ from app.models.transaction import Transaction, TransactionSplit
 from app.models.user import User
 
 
+class UserDataUnavailableError(LookupError):
+    """User row is missing or does not match the current actor."""
+
+
 class UserRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -26,7 +30,13 @@ class UserRepository:
         return result.scalar_one_or_none()
 
     async def get_by_id(self, user_id: int) -> User | None:
-        return await self._session.get(User, user_id)
+        with self._session.no_autoflush:
+            result = await self._session.execute(
+                select(User)
+                .where(User.id == user_id)
+                .execution_options(populate_existing=True)
+            )
+        return result.scalar_one_or_none()
 
     async def create(
         self,
@@ -55,17 +65,19 @@ class UserRepository:
         self,
         user: User,
         *,
+        user_id: int,
         telegram_chat_id: int,
         username: str | None,
         first_name: str | None,
     ) -> User:
-        user.telegram_chat_id = telegram_chat_id
-        user.username = username
-        user.first_name = first_name
+        owned = await self._validated_user(user, user_id)
+        owned.telegram_chat_id = telegram_chat_id
+        owned.username = username
+        owned.first_name = first_name
         await self._session.flush()
-        return user
+        return owned
 
-    async def wipe_user(self, user: User) -> None:
+    async def wipe_user(self, user: User, *, user_id: int) -> None:
         """Delete the user row and every record they own, in one flush.
 
         Children are removed before parents so the result is correct even with
@@ -78,7 +90,7 @@ class UserRepository:
         Direct Telegram bindings on other users' debts (``payer_telegram_id``)
         are cleared; other users' Subscription / Transaction rows are kept.
         """
-        user_id = user.id
+        user = await self._validated_user(user, user_id)
         telegram_user_id = user.telegram_user_id
 
         owned_friend_ids = select(Friend.id).where(Friend.user_id == user_id)
@@ -157,3 +169,11 @@ class UserRepository:
 
         await self._session.execute(delete(User).where(User.id == user_id))
         await self._session.flush()
+
+    async def _validated_user(self, user: User, user_id: int) -> User:
+        if user.id != user_id:
+            raise UserDataUnavailableError()
+        owned = await self.get_by_id(user_id)
+        if owned is None:
+            raise UserDataUnavailableError()
+        return owned
