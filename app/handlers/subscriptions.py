@@ -537,7 +537,7 @@ async def cb_off(callback: CallbackQuery, callback_data: SubCb, session: AsyncSe
     if sub is None:
         await callback.answer("Не найдено", show_alert=True)
         return
-    await service.deactivate(sub)
+    await service.deactivate(sub, user_id=db_user.id)
     await callback.message.edit_text(
         format_subscription_card(sub),
         reply_markup=subscription_card_keyboard(sub),
@@ -553,7 +553,7 @@ async def cb_on(callback: CallbackQuery, callback_data: SubCb, session: AsyncSes
     if sub is None:
         await callback.answer("Не найдено", show_alert=True)
         return
-    await service.activate(sub)
+    await service.activate(sub, user_id=db_user.id)
     await callback.message.edit_text(
         format_subscription_card(sub),
         reply_markup=subscription_card_keyboard(sub),
@@ -591,7 +591,7 @@ async def cb_delete_yes(
     if sub is None:
         await callback.answer("Уже удалена", show_alert=True)
         return
-    await service.delete(sub)
+    await service.delete(sub, user_id=db_user.id)
     await callback.answer("Удалено")
     await _send_subscriptions_list(callback.message, session, db_user, edit=True)
 
@@ -939,7 +939,7 @@ async def cb_prob_cancel(
     if sub is None:
         await callback.answer("Подписка не найдена", show_alert=True)
         return
-    await service.deactivate(sub)
+    await service.deactivate(sub, user_id=db_user.id)
     await callback.message.edit_text(
         success_screen("Подписка приостановлена", escape_html(sub.name)),
         reply_markup=subscription_card_keyboard(sub),
@@ -1064,7 +1064,7 @@ async def apply_edit(message: Message, state: FSMContext, session: AsyncSession,
         await message.answer(str(exc))
         return
 
-    await service.update_fields(sub)
+    await service.update_fields(sub, user_id=db_user.id)
     await state.clear()
 
     estimated = None
