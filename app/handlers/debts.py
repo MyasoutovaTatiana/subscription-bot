@@ -347,17 +347,37 @@ async def show_friend_debt(
         )
         return
 
-    if debt.payer_telegram_id and debt.payer_telegram_id != telegram_user_id:
+    claimed = await repo.claim_share_token(token, telegram_user_id)
+    debt = await repo.get_by_share_token(token)
+    if debt is None:
+        await message.answer(
+            screen(title(Icon.WARN, "Ссылка недействительна"), "Попроси новую ссылку у друга."),
+            parse_mode="HTML",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+    if not claimed:
+        # Another request may have claimed or closed the debt after our read.
+        if debt.status == DebtStatus.PAID.value:
+            await message.answer(
+                success_screen("Этот долг уже закрыт", "Спасибо!"),
+                parse_mode="HTML",
+                reply_markup=main_menu_keyboard(),
+            )
+            return
+        if debt.status == DebtStatus.CANCELLED.value:
+            await message.answer(
+                screen(title(Icon.INFO, "Долг отменён")),
+                parse_mode="HTML",
+                reply_markup=main_menu_keyboard(),
+            )
+            return
         await message.answer(
             warning_screen("Эта ссылка уже открыта другим человеком."),
             parse_mode="HTML",
             reply_markup=main_menu_keyboard(),
         )
         return
-
-    if debt.payer_telegram_id is None:
-        debt.payer_telegram_id = telegram_user_id
-        await session.flush()
 
     tx_name = debt.transaction.name if debt.transaction else "Платёж"
     if debt.status == DebtStatus.NEEDS_REVIEW.value:
