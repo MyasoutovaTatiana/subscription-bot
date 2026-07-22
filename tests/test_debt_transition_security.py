@@ -122,9 +122,9 @@ async def test_cancelled_debt_cannot_be_closed_by_stale_button(debt_context) -> 
         cancelled = await DebtRepository(cancel_session).get_by_id(ids.debt)
         stale_debt = await DebtRepository(stale).get_by_id(ids.debt)
         assert cancelled is not None and stale_debt is not None
-        assert await DebtRepository(cancel_session).cancel(cancelled) is True
+        assert await DebtRepository(cancel_session).cancel(cancelled, user_id=ids.owner) is True
         await cancel_session.commit()
-        assert await DebtRepository(stale).mark_paid(stale_debt) is False
+        assert await DebtRepository(stale).mark_paid(stale_debt, user_id=ids.owner) is False
         await stale.commit()
 
     async with factory() as verify:
@@ -149,9 +149,12 @@ async def test_paid_debt_cannot_be_reopened_by_stale_button(debt_context) -> Non
         paid_debt = await DebtRepository(paid_session).get_by_id(ids.debt)
         stale_debt = await DebtRepository(stale).get_by_id(ids.debt)
         assert paid_debt is not None and stale_debt is not None
-        assert await DebtRepository(paid_session).mark_paid(paid_debt) is True
+        assert await DebtRepository(paid_session).mark_paid(paid_debt, user_id=ids.owner) is True
         await paid_session.commit()
-        assert await DebtRepository(stale).reopen_awaiting(stale_debt) is False
+        assert await DebtRepository(stale).reopen_awaiting(
+            stale_debt,
+            user_id=ids.owner,
+        ) is False
         await stale.commit()
 
     async with factory() as verify:

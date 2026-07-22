@@ -141,7 +141,10 @@ async def cb_share(
     if debt is None:
         await callback.answer("Не найдено", show_alert=True)
         return
-    token = await repo.ensure_share_token(debt)
+    token = await repo.ensure_share_token(debt, user_id=db_user.id)
+    if token is None:
+        await callback.answer("Не найдено", show_alert=True)
+        return
     me = await bot.get_me()
     link = f"https://t.me/{me.username}?start=debt_{token}"
     friend = debt.friend.name if debt.friend else "другу"
@@ -172,7 +175,7 @@ async def cb_money_ok(
     if debt is None:
         await callback.answer("Не найдено", show_alert=True)
         return
-    if not await repo.mark_paid(debt):
+    if not await repo.mark_paid(debt, user_id=db_user.id):
         await callback.answer("Статус долга уже изменён", show_alert=True)
         return
     owner_name = _owner_first_name(db_user)
@@ -205,7 +208,7 @@ async def cb_money_no(
     if debt is None:
         await callback.answer("Не найдено", show_alert=True)
         return
-    if not await repo.reopen_awaiting(debt):
+    if not await repo.reopen_awaiting(debt, user_id=db_user.id):
         await callback.answer("Статус долга уже изменён", show_alert=True)
         return
     owner_name = _owner_first_name(db_user)
@@ -244,7 +247,7 @@ async def cb_check_later(
     if debt.status != DebtStatus.NEEDS_REVIEW.value:
         await callback.answer("Сначала дождись сообщения друга", show_alert=True)
         return
-    if not await repo.schedule_review_reminder(debt, hours=24):
+    if not await repo.schedule_review_reminder(debt, user_id=db_user.id, hours=24):
         await callback.answer("Статус долга уже изменён", show_alert=True)
         return
     await callback.message.edit_text(
@@ -267,7 +270,7 @@ async def cb_cancel(
     if debt is None:
         await callback.answer("Не найдено", show_alert=True)
         return
-    if not await repo.cancel(debt):
+    if not await repo.cancel(debt, user_id=db_user.id):
         await callback.answer("Статус долга уже изменён", show_alert=True)
         return
     await callback.answer("Отменён")
@@ -311,7 +314,7 @@ async def edit_debt_amount(
     if debt is None:
         await message.answer("Долг не найден.", reply_markup=main_menu_keyboard())
         return
-    if not await repo.update_amount(debt, amount):
+    if not await repo.update_amount(debt, amount, user_id=db_user.id):
         await message.answer(
             "Долг уже закрыт или отменён.",
             reply_markup=main_menu_keyboard(),

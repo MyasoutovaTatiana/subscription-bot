@@ -90,11 +90,14 @@ class DebtRepository:
         await self._session.flush()
         return bool(result.rowcount)
 
-    async def ensure_share_token(self, debt: Debt) -> str:
-        if not debt.share_token:
-            debt.share_token = self.new_share_token()
+    async def ensure_share_token(self, debt: Debt, *, user_id: int) -> str | None:
+        scoped_debt = await self.get_for_user(debt.id, user_id)
+        if scoped_debt is None:
+            return None
+        if not scoped_debt.share_token:
+            scoped_debt.share_token = self.new_share_token()
             await self._session.flush()
-        return debt.share_token
+        return scoped_debt.share_token
 
     async def list_open(self, user_id: int) -> list[Debt]:
         statuses = [s.value for s in OPEN_DEBT_STATUSES]
@@ -123,13 +126,13 @@ class DebtRepository:
     async def total_active_rub(self, user_id: int) -> Decimal:
         return await self.total_open_rub(user_id)
 
-    async def mark_paid(self, debt: Debt) -> bool:
+    async def mark_paid(self, debt: Debt, *, user_id: int) -> bool:
         """Atomically close an open debt; stale buttons cannot revive/overwrite it."""
         result = await self._session.execute(
             update(Debt)
             .where(
                 Debt.id == debt.id,
-                Debt.user_id == debt.user_id,
+                Debt.user_id == user_id,
                 Debt.status.in_(
                     [
                         DebtStatus.ACTIVE.value,
@@ -169,12 +172,12 @@ class DebtRepository:
         await self._session.flush()
         return bool(result.rowcount)
 
-    async def reopen_awaiting(self, debt: Debt) -> bool:
+    async def reopen_awaiting(self, debt: Debt, *, user_id: int) -> bool:
         result = await self._session.execute(
             update(Debt)
             .where(
                 Debt.id == debt.id,
-                Debt.user_id == debt.user_id,
+                Debt.user_id == user_id,
                 Debt.status == DebtStatus.NEEDS_REVIEW.value,
             )
             .values(
@@ -186,12 +189,18 @@ class DebtRepository:
         await self._session.flush()
         return bool(result.rowcount)
 
-    async def schedule_review_reminder(self, debt: Debt, *, hours: int = 24) -> bool:
+    async def schedule_review_reminder(
+        self,
+        debt: Debt,
+        *,
+        user_id: int,
+        hours: int = 24,
+    ) -> bool:
         result = await self._session.execute(
             update(Debt)
             .where(
                 Debt.id == debt.id,
-                Debt.user_id == debt.user_id,
+                Debt.user_id == user_id,
                 Debt.status == DebtStatus.NEEDS_REVIEW.value,
             )
             .values(review_remind_at=datetime.now(timezone.utc) + timedelta(hours=hours))
@@ -242,12 +251,12 @@ class DebtRepository:
             if d.payment_reported_at is not None and d.payment_reported_at <= older_than
         ]
 
-    async def cancel(self, debt: Debt) -> bool:
+    async def cancel(self, debt: Debt, *, user_id: int) -> bool:
         result = await self._session.execute(
             update(Debt)
             .where(
                 Debt.id == debt.id,
-                Debt.user_id == debt.user_id,
+                Debt.user_id == user_id,
                 Debt.status == DebtStatus.ACTIVE.value,
             )
             .values(status=DebtStatus.CANCELLED.value, review_remind_at=None)
@@ -255,12 +264,18 @@ class DebtRepository:
         await self._session.flush()
         return bool(result.rowcount)
 
-    async def update_amount(self, debt: Debt, amount: Decimal) -> bool:
+    async def update_amount(
+        self,
+        debt: Debt,
+        amount: Decimal,
+        *,
+        user_id: int,
+    ) -> bool:
         result = await self._session.execute(
             update(Debt)
             .where(
                 Debt.id == debt.id,
-                Debt.user_id == debt.user_id,
+                Debt.user_id == user_id,
                 Debt.status == DebtStatus.ACTIVE.value,
             )
             .values(amount_rub=amount)
