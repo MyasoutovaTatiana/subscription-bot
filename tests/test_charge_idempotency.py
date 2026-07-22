@@ -376,7 +376,7 @@ async def test_update_charge_date_to_occupied_period_is_safe(
     tx = await service.get_for_user(second_id, owner.id)
     assert tx is not None
     with pytest.raises(ChargeDateConflictError):
-        await service.update_charge_date(tx, PERIOD)
+        await service.update_charge_date(tx, PERIOD, user_id=owner.id)
 
     # Session remains usable after conflict.
     still = await service.get_for_user(first_id, owner.id)

@@ -213,8 +213,11 @@ class ChargeService:
         self,
         tx: Transaction,
         amount: Decimal,
+        *,
+        user_id: int,
     ) -> tuple[Decimal, Decimal]:
         """Set fact ₽ amount; recalculate friend debts. Returns (was, now)."""
+        tx = await self._validated_owned_transaction(tx, user_id)
         subscription = await self._subscription_for(tx)
         await self._validate_rebuild_links(tx, subscription)
 
@@ -233,11 +236,14 @@ class ChargeService:
         self,
         tx: Transaction,
         new_date: date,
+        *,
+        user_id: int,
     ) -> date | None:
         """
         Change charge date and recompute subscription.next_charge_date from it.
         Also refresh CBR estimate for the new date when fact is not set.
         """
+        tx = await self._validated_owned_transaction(tx, user_id)
         sub = await self._subscription_for(tx)
         if tx.actual_rub_amount is None:
             await self._validate_rebuild_links(tx, sub)
@@ -287,8 +293,11 @@ class ChargeService:
         self,
         tx: Transaction,
         unit_rate_rub: Decimal,
+        *,
+        user_id: int,
     ) -> Decimal:
         """Set manual unit rate (₽ for 1 unit of original currency); update estimate."""
+        tx = await self._validated_owned_transaction(tx, user_id)
         if unit_rate_rub <= ZERO:
             raise MoneyError("Курс должен быть больше нуля")
         subscription = None
@@ -308,14 +317,16 @@ class ChargeService:
             await self._rebuild_splits_and_debts(tx, subscription)
         return estimated
 
-    async def recalculate_debts(self, tx: Transaction) -> None:
+    async def recalculate_debts(self, tx: Transaction, *, user_id: int) -> None:
+        tx = await self._validated_owned_transaction(tx, user_id)
         await self._rebuild_splits_and_debts(tx, await self._subscription_for(tx))
 
-    async def undo_charge(self, tx: Transaction) -> Subscription | None:
+    async def undo_charge(self, tx: Transaction, *, user_id: int) -> Subscription | None:
         """
         Cancel charge: delete transaction + debts, restore subscription
         to awaiting the same charge date.
         """
+        tx = await self._validated_owned_transaction(tx, user_id)
         sub = await self._subscription_for(tx)
         charge_day = tx.transaction_date
         await self._debts.delete_all_for_transaction(tx.id)
@@ -328,8 +339,9 @@ class ChargeService:
             await self._subs.save(sub)
         return sub
 
-    async def delete_charge(self, tx: Transaction) -> Subscription | None:
+    async def delete_charge(self, tx: Transaction, *, user_id: int) -> Subscription | None:
         """Delete charge from history; keep next_charge_date as already advanced."""
+        tx = await self._validated_owned_transaction(tx, user_id)
         sub = await self._subscription_for(tx)
         await self._debts.delete_all_for_transaction(tx.id)
         await self._tx.clear_splits(tx)
@@ -340,6 +352,19 @@ class ChargeService:
         if tx.subscription_id is None:
             return None
         return await self._subs.get_for_user(tx.subscription_id, tx.user_id)
+
+    async def _validated_owned_transaction(
+        self,
+        tx: Transaction,
+        user_id: int,
+    ) -> Transaction:
+        """Reload a mutation target in the current user's ownership scope."""
+        if tx.user_id != user_id:
+            raise ChargeDataUnavailableError()
+        owned = await self._tx.get_for_user(tx.id, user_id)
+        if owned is None:
+            raise ChargeDataUnavailableError()
+        return owned
 
     async def _rebuild_splits_and_debts(
         self,
