@@ -11,8 +11,8 @@ import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.handlers.one_time_payments import ot_confirm
-from app.handlers.subscriptions import confirm_create
+from app.handlers.one_time_payments import ot_confirm, ot_pm
+from app.handlers.subscriptions import add_payment_method, confirm_create
 from app.models import Base
 from app.models.debt import Debt
 from app.models.enums import (
@@ -287,6 +287,60 @@ def _confirm_callback() -> MagicMock:
     callback.message = MagicMock()
     callback.message.edit_text = AsyncMock()
     return callback
+
+
+@pytest.mark.asyncio
+async def test_subscription_pm_callback_rejects_foreign_id_before_fsm_write(
+    session: AsyncSession,
+) -> None:
+    owner = await _user(session, telegram_user_id=1, username="owner")
+    other = await _user(session, telegram_user_id=2, username="other")
+    foreign = await _pm(session, other.id)
+    state = AsyncMock()
+    callback = _confirm_callback()
+
+    await add_payment_method(
+        callback,
+        MenuCb(action="pm", value=str(foreign.id)),
+        state,
+        session,
+        owner,
+    )
+
+    state.update_data.assert_not_awaited()
+    state.set_state.assert_not_awaited()
+    callback.message.edit_text.assert_not_awaited()
+    callback.answer.assert_awaited_once_with(
+        PAYMENT_METHOD_UNAVAILABLE_MESSAGE,
+        show_alert=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_one_time_pm_callback_rejects_inactive_id_before_fsm_write(
+    session: AsyncSession,
+) -> None:
+    owner = await _user(session, telegram_user_id=1, username="owner")
+    inactive = await _pm(session, owner.id)
+    await PaymentMethodRepository(session).deactivate(inactive)
+    state = AsyncMock()
+    callback = _confirm_callback()
+
+    await ot_pm(
+        callback,
+        MenuCb(action="pm", value=str(inactive.id)),
+        state,
+        session,
+        owner,
+    )
+
+    state.update_data.assert_not_awaited()
+    state.set_state.assert_not_awaited()
+    callback.message.edit_text.assert_not_awaited()
+    callback.answer.assert_awaited_once_with(
+        PAYMENT_METHOD_UNAVAILABLE_MESSAGE,
+        show_alert=True,
+    )
 
 
 @pytest.mark.asyncio

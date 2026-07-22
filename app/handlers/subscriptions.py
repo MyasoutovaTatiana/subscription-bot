@@ -274,6 +274,8 @@ async def add_payment_method(
     callback: CallbackQuery,
     callback_data: MenuCb,
     state: FSMContext,
+    session: AsyncSession,
+    db_user: User,
 ) -> None:
     value = callback_data.value
     if value == "new":
@@ -286,7 +288,19 @@ async def add_payment_method(
     if value == "skip":
         await state.update_data(payment_method_id=None)
     else:
-        await state.update_data(payment_method_id=int(value))
+        try:
+            payment_method_id = int(value)
+        except (TypeError, ValueError):
+            await callback.answer(PAYMENT_METHOD_UNAVAILABLE_MESSAGE, show_alert=True)
+            return
+        method = await PaymentMethodRepository(session).get_active_for_user(
+            payment_method_id,
+            db_user.id,
+        )
+        if method is None:
+            await callback.answer(PAYMENT_METHOD_UNAVAILABLE_MESSAGE, show_alert=True)
+            return
+        await state.update_data(payment_method_id=method.id)
 
     await state.set_state(AddSubscriptionSG.reminders)
     await callback.message.edit_text("🔔 Напоминания", reply_markup=reminders_keyboard())
