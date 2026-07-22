@@ -16,7 +16,12 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    bot_token: str = Field(..., min_length=10, description="Telegram Bot API token")
+    bot_token: str = Field(
+        ...,
+        min_length=10,
+        description="Telegram Bot API token",
+        repr=False,
+    )
     database_url: str = Field(
         default="sqlite+aiosqlite:///./subscription_bot.db",
         description="SQLAlchemy async database URL",
