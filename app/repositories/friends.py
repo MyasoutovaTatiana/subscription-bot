@@ -69,6 +69,11 @@ class FriendRepository:
         await self._session.flush()
         return friend
 
-    async def delete(self, friend: Friend) -> None:
-        await self._session.delete(friend)
+    async def delete(self, friend: Friend, *, user_id: int) -> None:
+        if friend.user_id != user_id:
+            raise FriendsUnavailableError
+        owned = await self.get_for_user(friend.id, user_id)
+        if owned is None:
+            raise FriendsUnavailableError
+        await self._session.delete(owned)
         await self._session.flush()

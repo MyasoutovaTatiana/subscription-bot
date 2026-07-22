@@ -229,7 +229,7 @@ async def test_confirm_allows_owned_inactive_payment_method(
         owner.id,
         payment_method_id=method.id,
     )
-    await PaymentMethodRepository(session).deactivate(method)
+    await PaymentMethodRepository(session).deactivate(method, user_id=owner.id)
 
     tx, _next_date, _estimated, _actual = await ChargeService(session).confirm_charged(
         subscription,
