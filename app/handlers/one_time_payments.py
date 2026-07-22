@@ -239,7 +239,22 @@ async def ot_pm(
         )
         await callback.answer()
         return
-    await state.update_data(payment_method_id=None if value == "skip" else int(value))
+    if value == "skip":
+        await state.update_data(payment_method_id=None)
+    else:
+        try:
+            payment_method_id = int(value)
+        except (TypeError, ValueError):
+            await callback.answer(PAYMENT_METHOD_UNAVAILABLE_MESSAGE, show_alert=True)
+            return
+        method = await PaymentMethodRepository(session).get_active_for_user(
+            payment_method_id,
+            db_user.id,
+        )
+        if method is None:
+            await callback.answer(PAYMENT_METHOD_UNAVAILABLE_MESSAGE, show_alert=True)
+            return
+        await state.update_data(payment_method_id=method.id)
     await callback.message.edit_text("Ок")
     await _go_friends(callback.message, state, session, db_user)
     await callback.answer()
@@ -283,6 +298,19 @@ async def ot_friends_toggle(
         return
 
     if value == "done":
+        requested_friend_ids = set(selected)
+        friends = await FriendRepository(session).list_by_ids_for_user(
+            requested_friend_ids,
+            db_user.id,
+        )
+        if {friend.id for friend in friends} != requested_friend_ids:
+            await state.update_data(selected_friend_ids=[])
+            available_friends = await FriendRepository(session).list_for_user(db_user.id)
+            await callback.message.edit_reply_markup(
+                reply_markup=friends_select_keyboard(available_friends, set()),
+            )
+            await callback.answer(FRIENDS_UNAVAILABLE_MESSAGE, show_alert=True)
+            return
         await state.update_data(selected_friend_ids=list(selected))
         if not selected:
             await state.update_data(include_owner=True, split_mode=None)
@@ -299,7 +327,15 @@ async def ot_friends_toggle(
         await callback.answer()
         return
 
-    friend_id = int(value)
+    try:
+        friend_id = int(value)
+    except (TypeError, ValueError):
+        await callback.answer(FRIENDS_UNAVAILABLE_MESSAGE, show_alert=True)
+        return
+    friend = await FriendRepository(session).get_for_user(friend_id, db_user.id)
+    if friend is None:
+        await callback.answer(FRIENDS_UNAVAILABLE_MESSAGE, show_alert=True)
+        return
     if friend_id in selected:
         selected.remove(friend_id)
     else:

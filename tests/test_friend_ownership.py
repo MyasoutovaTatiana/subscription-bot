@@ -11,7 +11,7 @@ import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.handlers.one_time_payments import ot_confirm
+from app.handlers.one_time_payments import ot_confirm, ot_friends_toggle
 from app.handlers.subscriptions import confirm_create
 from app.models import Base
 from app.models.debt import Debt
@@ -278,7 +278,64 @@ def _callback() -> MagicMock:
     callback.answer = AsyncMock()
     callback.message = MagicMock()
     callback.message.edit_text = AsyncMock()
+    callback.message.edit_reply_markup = AsyncMock()
     return callback
+
+
+@pytest.mark.asyncio
+async def test_friend_toggle_rejects_foreign_id_before_fsm_write(
+    session: AsyncSession,
+) -> None:
+    owner = await _user(session, 1)
+    other = await _user(session, 2)
+    foreign = await _friend(session, other.id, "Чужой друг")
+    state = AsyncMock()
+    state.get_data = AsyncMock(return_value={"selected_friend_ids": []})
+    callback = _callback()
+
+    await ot_friends_toggle(
+        callback,
+        MenuCb(action="ftoggle", value=str(foreign.id)),
+        state,
+        session,
+        owner,
+    )
+
+    state.update_data.assert_not_awaited()
+    state.set_state.assert_not_awaited()
+    callback.message.edit_reply_markup.assert_not_awaited()
+    callback.answer.assert_awaited_once_with(
+        FRIENDS_UNAVAILABLE_MESSAGE,
+        show_alert=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_done_rechecks_and_clears_foreign_friend_from_fsm(
+    session: AsyncSession,
+) -> None:
+    owner = await _user(session, 1)
+    other = await _user(session, 2)
+    foreign = await _friend(session, other.id, "Чужой друг")
+    state = AsyncMock()
+    state.get_data = AsyncMock(return_value={"selected_friend_ids": [foreign.id]})
+    callback = _callback()
+
+    await ot_friends_toggle(
+        callback,
+        MenuCb(action="ftoggle", value="done"),
+        state,
+        session,
+        owner,
+    )
+
+    state.update_data.assert_awaited_once_with(selected_friend_ids=[])
+    state.set_state.assert_not_awaited()
+    callback.message.edit_reply_markup.assert_awaited_once()
+    callback.answer.assert_awaited_once_with(
+        FRIENDS_UNAVAILABLE_MESSAGE,
+        show_alert=True,
+    )
 
 
 @pytest.mark.asyncio
